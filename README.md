@@ -2,9 +2,33 @@
 
 [简体中文](README_CN.md)
 
-Hashive is a single-file, read-only key-value database implemented in Go.
+Hashive is a single-file, read-only key-value database.
 
 In simple terms, a Hashive database is essentially a `map[string]any` stored in a file, allowing for fast lookups without the need to load the entire file into memory.
+
+## Design Goals
+
+1. Single-file Database
+
+    A Hashive database is a single file that can be queried without needing to load the entire file into memory.
+
+2. Lightweight
+
+    No additional configuration steps are required; it works out of the box. It does not significantly increase the complexity of the entire system.
+
+3. Speed
+
+    Hashive aims to achieve query speeds comparable to (or faster than) other databases.
+
+4. Key-Value Query
+
+    Hashive only stores key-value data. Values are queried using string-type keys.
+
+5. Read-Only
+
+    Hashive is optimized for read-only operations. More complex and slower write operations can be traded off for faster query speeds. In practice, a Hashive database is typically written (generated) only once.
+
+It is evident that the first three design goals highly overlap with those of the SQLite database. However, SQLite is not a key-value database nor a read-only, and it lacks optimizations for key-value queries and read-only datasets. The third and fourth points highly overlap with hash tables, but hash tables require loading the entire dataset into memory to be usable. Hashive aims to find a balance between SQLite and in-memory hash tables, specifically optimized for read-only datasets.
 
 ## Features
 
