@@ -1,29 +1,29 @@
 # Hashive
 
-[简体中文](README_CN.md)
+[English](README.md)
 
-Hashive is a single-file, read-only key-value database implemented in Go.
+Hashive 是一个用 Go 语言实现的单文件只读键值数据库。
 
-In simple terms, a Hashive database is essentially a `map[string]any` stored in a file, allowing for fast lookups without the need to load the entire file into memory.
+简单来说，一个 Hashive 数据库就是一个存储在文件中的 `map[string]any`，无需全部读入内存即可进行快速查找。
 
-## Features
+## 特性
 
-1. Performance
+1. 性能
 
-    In specific scenarios, Hashive's query speed is 5 times faster than that of an SQLite3 database with the same content.
+    在特定场景下，Hashive 的查询速度是同样内容 SQLite3 数据库的5倍。
 
-    Benchmark(3 random queries):
+    Benchmark 数据如下（3次随机查询）：
 
     ```text
     Hashive    110955   10112 ns/op   568 B/op    21 allocs/op
     SQLite     22893    51927 ns/op   1760 B/op   57 allocs/op
     ```
 
-2. Direct Storage of Any Go Value
+2. 直接存储任何 Go 值
 
-    In addition to commonly used types such as integers, floating-point numbers, strings, arrays, and associative objects (hash maps), any type supported by `encoding/gob` can be stored as a value.
+    除了常用的整数、浮点数、字符串、数组、关联对象（哈希表）外，任何受`encoding/gob`支持的类型均可以作为值存储。
 
-## Example
+## 示例
 
 ```go
 package hashive_test
@@ -91,4 +91,5 @@ func Example() {
     // John
     // abc street
 }
+
 ```
