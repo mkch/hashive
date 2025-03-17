@@ -117,15 +117,23 @@ func (r *bufByteReadSeeker) ReadByte() (b byte, err error) {
 	return
 }
 
-var endian = binary.LittleEndian
+var littleEndian = binary.LittleEndian
 
 // fixedUintSize returns the minimum byte size to store n.
 func fixedUintSize(n uint64) byte {
-	if n > math.MaxUint32 {
+	if n > 0xFF_FF_FF_FF_FF_FF_FF {
 		return 8
-	} else if n > math.MaxUint16 {
+	} else if n > 0xFF_FF_FF_FF_FF_FF {
+		return 7
+	} else if n > 0xFF_FF_FF_FF_FF {
+		return 6
+	} else if n > 0xFF_FF_FF_FF {
+		return 5
+	} else if n > 0xFF_FF_FF {
 		return 4
-	} else if n > math.MaxUint8 {
+	} else if n > 0xFF_FF {
+		return 3
+	} else if n > 0xFF {
 		return 2
 	} else {
 		return 1
@@ -147,57 +155,38 @@ func (r *byteReadSeeker) ReadByte() (b byte, err error) {
 // If n doesn't fit the size, it will be truncated.
 func writeFixedUint(w io.Writer, n uint64, size byte) (err error) {
 	var buf [8]byte // size of uint64
-	var s []byte
 	switch size {
 	case 1:
-		s = buf[:1]
-		s[0] = byte(n)
+		buf[0] = byte(n)
 	case 2:
-		s = buf[:2]
-		endian.PutUint16(s, uint16(n))
-	case 4:
-		s = buf[:4]
-		endian.PutUint32(s, uint32(n))
-	case 8:
-		s = buf[:]
-		endian.PutUint64(s, n)
+		littleEndian.PutUint16(buf[:], uint16(n))
+	case 3, 4:
+		littleEndian.PutUint32(buf[:], uint32(n))
+	case 5, 6, 7, 8:
+		littleEndian.PutUint64(buf[:], n)
 	default:
 		err = fmt.Errorf("invalid size %v", size)
 		return
 	}
-	_, err = w.Write(s)
+	_, err = w.Write(buf[:size])
 	return
 }
 
 // readFixedUint reads a byte sequence from r and convert it to a unsigned integer.
 func readFixedUint(r ByteReadSeeker, size byte) (n uint64, err error) {
 	var buf [8]byte // size of uint64
-	var s []byte
+	if _, err = io.ReadFull(r, buf[:size]); err != nil {
+		return
+	}
 	switch size {
 	case 1:
-		var b byte
-		if b, err = r.ReadByte(); err != nil {
-			return
-		}
-		n = uint64(b)
+		n = uint64(buf[0])
 	case 2:
-		s = buf[:2]
-		if _, err = r.Read(s); err != nil {
-			return
-		}
-		n = uint64(endian.Uint16(s))
-	case 4:
-		s = buf[:4]
-		if _, err = r.Read(s); err != nil {
-			return
-		}
-		n = uint64(endian.Uint32(s))
-	case 8:
-		s = buf[:]
-		if _, err = r.Read(s); err != nil {
-			return
-		}
-		n = endian.Uint64(s)
+		n = uint64(littleEndian.Uint16(buf[:]))
+	case 3, 4:
+		n = uint64(littleEndian.Uint32(buf[:]))
+	case 5, 6, 7, 8:
+		n = littleEndian.Uint64(buf[:])
 	default:
 		err = fmt.Errorf("invalid size %v", size)
 		return
@@ -212,22 +201,38 @@ func writeUintValue(w io.Writer, n uint64) (err error) {
 	if n <= math.MaxInt8 {
 		buf[0] = byte(n)
 		buf = buf[:1]
-	} else if n <= math.MaxUint8 {
+	} else if n <= 0xFF {
 		buf[0] = ^byte(1) + 1 // -1
 		buf[1] = byte(n)
 		buf = buf[:2]
-	} else if n <= math.MaxUint16 {
+	} else if n <= 0xFF_FF {
 		buf[0] = ^byte(2) + 1 // -2
+		littleEndian.PutUint16(buf[1:], uint16(n))
 		buf = buf[:3]
-		endian.PutUint16(buf[1:], uint16(n))
-	} else if n <= math.MaxUint32 {
+	} else if n <= 0xFF_FF_FF {
+		buf[0] = ^byte(3) + 1 // -3
+		littleEndian.PutUint32(buf[1:], uint32(n))
+		buf = buf[:4]
+	} else if n <= 0xFF_FF_FF_FF {
 		buf[0] = ^byte(4) + 1 // -4
+		littleEndian.PutUint32(buf[1:], uint32(n))
 		buf = buf[:5]
-		endian.PutUint32(buf[1:], uint32(n))
+	} else if n <= 0xFF_FF_FF_FF_FF {
+		buf[0] = ^byte(5) + 1 // -5
+		littleEndian.PutUint64(buf[1:], n)
+		buf = buf[:6]
+	} else if n <= 0xFF_FF_FF_FF_FF_FF {
+		buf[0] = ^byte(6) + 1 // -6
+		littleEndian.PutUint64(buf[1:], n)
+		buf = buf[:7]
+	} else if n <= 0xFF_FF_FF_FF_FF_FF_FF {
+		buf[0] = ^byte(7) + 1 // -7
+		littleEndian.PutUint64(buf[1:], n)
+		buf = buf[:8]
 	} else {
 		buf[0] = ^byte(8) + 1 // -8
+		littleEndian.PutUint64(buf[1:], n)
 		buf = buf[:9]
-		endian.PutUint64(buf[1:], n)
 	}
 	_, err = w.Write(buf)
 	return
@@ -241,30 +246,11 @@ func readUintValue(r ByteReadSeeker) (n uint64, err error) {
 		return
 	}
 	if b0 <= math.MaxInt8 {
-		n = uint64(b0)
+		return uint64(b0), nil
 	} else {
-		var buf = make([]byte, 8)
 		length := ^(b0 - 1) // length = -b0
-		if length > 8 {
-			err = fmt.Errorf("invalid length %v(0x%x)", length, b0)
-			return
-		}
-		buf = buf[:length]
-		if _, err = io.ReadFull(r, buf); err != nil {
-			return
-		}
-		switch length {
-		case 1:
-			n = uint64(buf[0])
-		case 2:
-			n = uint64(endian.Uint16(buf))
-		case 4:
-			n = uint64(endian.Uint32(buf))
-		default:
-			n = endian.Uint64(buf)
-		}
+		return readFixedUint(r, length)
 	}
-	return
 }
 
 // WriteUint writes n with a variable-length encoding.
@@ -875,36 +861,34 @@ type bucketKV struct {
 }
 
 // genBuckets is the Separate Chaining hash table algorithm.
-func genBuckets(obj map[string]any, bucketCount int) (buckets [][]bucketKV, maxListLen int) {
+func genBuckets(obj map[string]any, bucketCount int) (buckets [][]bucketKV, avgOverflow int) {
 	buckets = make([][]bucketKV, bucketCount)
 	for k, v := range obj {
 		hash := stringHash(k)
 		i := hash % uint64(bucketCount)
 		buckets[i] = append(buckets[i], bucketKV{k, v})
-		if len := len(buckets[i]); len > maxListLen {
-			maxListLen = len
+	}
+	var sumOverflow int
+	var numOverflow int
+	for _, b := range buckets {
+		if overflow := len(b); overflow > 1 {
+			numOverflow++
+			sumOverflow += overflow
 		}
+	}
+	if numOverflow > 0 {
+		avgOverflow = sumOverflow / numOverflow
 	}
 	return
 }
 
 // WriteObject writes a map[string]any to w.
 func WriteObject(w io.Writer, obj map[string]any, gobEncoder GobEncoder) (err error) {
-	bucketCount := len(obj)
-	var buckets [][]bucketKV
-	if bucketCount > 0 {
-		const BestEffects = 16
-		const MaxAllowedListLen = 5
-		for range BestEffects {
-			var maxPrimeReached bool
-			bucketCount = max(bucketCount*10/7, bucketCount+1)
-			bucketCount, maxPrimeReached = nearestPrime(bucketCount)
-			var maxListLen int
-			buckets, maxListLen = genBuckets(obj, bucketCount)
-			if maxListLen <= MaxAllowedListLen || maxPrimeReached {
-				break
-			}
-		}
+	bucketCount := nearestPrime(len(obj) * 4 / 3)
+	buckets, avgOverflow := genBuckets(obj, bucketCount)
+	if avgOverflow > 5 {
+		bucketCount = nearestPrime(max(bucketCount*4/3, bucketCount+1))
+		buckets, _ = genBuckets(obj, bucketCount)
 	}
 
 	var bucketData bytes.Buffer

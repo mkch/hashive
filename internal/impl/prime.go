@@ -12,23 +12,22 @@ func isPrimeMillerRabin(n int) bool {
 }
 
 // nearestPrime returns the prime number nearest to n.
-// The returned smaller is true if prime is less than n.
 // Panics if n < 0.
-func nearestPrime(n int) (prime int, smaller bool) {
+func nearestPrime(n int) (prime int) {
 	if n < 0 {
 		panic("negative n for nearestPrime")
 	}
 	if n <= 2 {
-		return 2, false
+		return 2
 	}
 	for i := n; i > 0 && i <= math.MaxInt; i++ {
 		if isPrimeMillerRabin(i) {
-			return i, false
+			return i
 		}
 	}
 	for i := n; i > 2; i-- {
 		if isPrimeMillerRabin(i) {
-			return i, true
+			return i
 		}
 	}
 	panic("can't find the nearest prime") // should not happen.

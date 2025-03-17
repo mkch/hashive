@@ -277,7 +277,6 @@ func TestOUISqlite(t *testing.T) {
 var benchmarkArgs = []string{"AC319D", "004023", "248602"}
 
 func Benchmark_OUI_Hashive(b *testing.B) {
-	b.ResetTimer()
 	for b.Loop() {
 		for _, arg := range benchmarkArgs {
 			hashiveBench.Query(arg)
@@ -286,10 +285,8 @@ func Benchmark_OUI_Hashive(b *testing.B) {
 }
 
 func Benchmark_OUI_SQLite(b *testing.B) {
-	args := benchmarkArgs
-	b.ResetTimer()
 	for b.Loop() {
-		for _, arg := range args {
+		for _, arg := range benchmarkArgs {
 			sqliteBench.Query(arg)
 		}
 	}
