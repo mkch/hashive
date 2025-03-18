@@ -894,6 +894,10 @@ func WriteObject(w io.Writer, obj map[string]any, gobEncoder GobEncoder) (err er
 	var bucketData bytes.Buffer
 	var offsets = make([]int, bucketCount)
 	for i, list := range buckets {
+		if listLen := len(list); listLen == 0 {
+			offsets[i] = -1
+			continue
+		}
 		offsets[i] = bucketData.Len()
 		// List size
 		writeUintValue(&bucketData, uint64(len(list)))
@@ -909,8 +913,11 @@ func WriteObject(w io.Writer, obj map[string]any, gobEncoder GobEncoder) (err er
 	}
 
 	var maxOffset = 0
-	if len(offsets) > 0 {
-		maxOffset = offsets[len(offsets)-1]
+	for i := len(offsets) - 1; i >= 0; i-- {
+		if offset := offsets[i]; offset != -1 {
+			maxOffset = offset
+			break // The last real offset
+		}
 	}
 	var offsetSize = fixedUintSize(uint64(maxOffset))
 	// offsetSize must be large enough to hold the max offset plus the size of offset section.
@@ -925,7 +932,12 @@ func WriteObject(w io.Writer, obj map[string]any, gobEncoder GobEncoder) (err er
 	// Fix offsets
 	delta := bucketCount * int(offsetSize)
 	for i := range offsets {
-		offsets[i] += delta
+		if offsets[i] != -1 {
+			offsets[i] += delta
+		} else {
+			// 0 can't be a real offset for an non-empty hashmap.
+			offsets[i] = 0
+		}
 	}
 
 	var header bytes.Buffer
@@ -966,9 +978,12 @@ func (obj *Object) Value() (v map[string]any, err error) {
 		if err != nil {
 			return
 		}
-		if offset > math.MaxInt64 {
+		if offset > math.MaxInt {
 			err = fmt.Errorf("invalid offset %v", offset)
 			return
+		}
+		if offset == 0 {
+			continue // Not exists
 		}
 		_, err = obj.r.Seek(obj.pos+int64(offset), io.SeekStart)
 		if err != nil {
@@ -1012,8 +1027,12 @@ func (obj *Object) Index(key string, recursive bool) (v any, err error) {
 	if err != nil {
 		return
 	}
-	if offset > math.MaxInt64 {
+	if offset > math.MaxInt {
 		err = fmt.Errorf("invalid offset %v", offset)
+		return
+	}
+	if offset == 0 {
+		err = ErrNotFound // Not exists
 		return
 	}
 	_, err = obj.r.Seek(obj.pos+int64(offset), io.SeekStart)
