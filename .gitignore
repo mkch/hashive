@@ -21,3 +21,6 @@
 go.work
 .DS_Store
 /testdata
+/.vscode
+*.dSYM
+*.plist

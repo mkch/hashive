@@ -1,0 +1,2 @@
+gcc --analyze -Werror testing.c ctest.c
+gcc -Werror -fsanitize=address,undefined -g testing.c ctest.c
