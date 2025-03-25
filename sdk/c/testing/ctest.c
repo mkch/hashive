@@ -43,6 +43,40 @@ typedef int64_t duration;
 
 #if defined(_WIN32) || defined(_WIN64)
 
+#include <windows.h>
+
+typedef LARGE_INTEGER time_spec;
+
+// The frequency of the performance counter is fixed at system boot
+// and is consistent across all processors. 
+// Therefore, the frequency need only be queried upon application
+// initialization, and the result can be cached.
+static LARGE_INTEGER performance_freq = {0};
+
+void get_time(time_spec* t) {
+    if(performance_freq.QuadPart == 0) {
+        if(!QueryPerformanceFrequency(&performance_freq)) {
+            char msg_buf[64] = {0};
+            snprintf(msg_buf, sizeof(msg_buf)/sizeof(msg_buf[0]),"Last Error=0x%lx", GetLastError());
+            ERROR_ABORT_MSG("QueryPerformanceFrequency", msg_buf);
+        }
+    }
+
+    if(!QueryPerformanceCounter(t)) {
+        char msg_buf[64] = {0};
+        snprintf(msg_buf, sizeof(msg_buf)/sizeof(msg_buf[0]),"Last Error=0x%lx", GetLastError());
+        ERROR_ABORT_MSG("QueryPerformanceFrequency", msg_buf);
+    }
+}
+
+/**
+ * Calculates the duration of t1 - t2, in nanoseconds.
+ */
+duration time_sub_nsec(time_spec* t1, time_spec* t2) {
+    return (t1->QuadPart - t2->QuadPart)*1000000000 / performance_freq.QuadPart;
+}
+
+
 #else
 
 #include <time.h>
@@ -87,7 +121,7 @@ int duration_format_nsec(duration d, char* buf, size_t buf_size) {
 typedef struct ctest_test {
     const char* name;  // name of test. WILL NOT FREE.
     ctest_test_func f;
-    BOOL failed;
+    bool failed;
     size_t log_message_count;
     char** log_messages;
 } ctest_test;
@@ -113,7 +147,7 @@ static char* vlog_ln(const char* file, int line, const char* format, va_list arg
     if (vsnprintf(content, content_len + 1, format, args2) < 0)
         ERROR_ABORT("vsnprintf");
     va_end(args2);
-    const BOOL end_with_n = content_len > 0 && content[content_len - 1] == '\n';
+    const bool end_with_n = content_len > 0 && content[content_len - 1] == '\n';
     const char* fmt = end_with_n ? "    %s:%d: %s" : "    %s:%d: %s\n";
     int output_len = snprintf(NULL, 0, fmt, file, line, content);
     char* output = calloc(output_len + 1, sizeof(char));
@@ -125,7 +159,7 @@ static char* vlog_ln(const char* file, int line, const char* format, va_list arg
     return output;
 }
 
-static void ctest_test_vlog(ctest_test* test, BOOL verbose, const char* file, int line, const char* format, va_list args) {
+static void ctest_test_vlog(ctest_test* test, bool verbose, const char* file, int line, const char* format, va_list args) {
     char* message = vlog_ln(file, line, format, args);
     if (verbose || test->failed) {
         printf("%s", message);
@@ -139,7 +173,7 @@ static void ctest_test_vlog(ctest_test* test, BOOL verbose, const char* file, in
     }
 }
 
-void ctest_test_log(ctest_test* test, BOOL verbose, const char* file, int line, const char* format, ...) {
+void ctest_test_log(ctest_test* test, bool verbose, const char* file, int line, const char* format, ...) {
     va_list args;
     va_start(args, format);
     ctest_test_vlog(test, verbose, file, line, format, args);
@@ -147,7 +181,7 @@ void ctest_test_log(ctest_test* test, BOOL verbose, const char* file, int line, 
 }
 
 void ctest_test_fail(ctest_test* test) {
-    test->failed = TRUE;
+    test->failed = true;
     // Print accumulated log messages.
     for (size_t i = 0; i < test->log_message_count; i++) {
         printf("%s", test->log_messages[i]);
@@ -188,10 +222,10 @@ void ctest_test_suit_add(ctest_test_suit* suit, char* name, ctest_test_func f) {
     suit->tests[suit->test_count - 1] = test;
     test->name = name;
     test->f = f;
-    test->failed = FALSE;
+    test->failed = false;
 }
 
-void ctest_test_suit_run(ctest_test_suit* suit, CTEST_FLAG flags) {
+bool ctest_test_suit_run(ctest_test_suit* suit, CTEST_FLAG flags) {
     time_spec start;
     get_time(&start);
 
@@ -200,9 +234,9 @@ void ctest_test_suit_run(ctest_test_suit* suit, CTEST_FLAG flags) {
         printf("=== RUN\t%s\n", test->name);
         test->f(test, flags & CTEST_FLAG_VERBOSE);
         if (test->failed) {
-            printf("--- FAIL:%s\n", test->name);
+            printf("--- FAIL: %s\n", test->name);
         } else {
-            printf("--- PASS:%s\n", test->name);
+            printf("--- PASS: %s\n", test->name);
         }
     }
     size_t failure_count = 0;
@@ -212,9 +246,9 @@ void ctest_test_suit_run(ctest_test_suit* suit, CTEST_FLAG flags) {
         }
     }
     if (failure_count) {
-        printf("FAIL\n");
+        printf("FAIL");
     } else {
-        printf("PASS\n");
+        printf("PASS");
     }
 
     time_spec end;
@@ -222,5 +256,6 @@ void ctest_test_suit_run(ctest_test_suit* suit, CTEST_FLAG flags) {
 
     char buf[255] = {0};
     duration_format_nsec(time_sub_nsec(&end, &start), buf, sizeof(buf) / sizeof(buf[0]));
-    printf("%s\n", buf);
+    printf("\t%s\n", buf);
+    return failure_count == 0;
 }
