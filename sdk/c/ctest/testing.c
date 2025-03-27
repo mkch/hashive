@@ -1,5 +1,6 @@
-#include "ctest.h"
 #include <stdint.h>
+
+#include "ctest.h"
 
 CTEST_TEST_FUNC(test_fail) {
     CTEST_LOGF("log message");
@@ -23,8 +24,8 @@ void sleep_ms(uint32_t ms) {
 
 #else
 
-#include <unistd.h>
 #include <time.h>
+#include <unistd.h>
 
 typedef struct timespec time_spec;
 
@@ -45,13 +46,13 @@ CTEST_TEST_FUNC(test_get_time) {
     time_spec end;
     get_time(&end);
     duration d = time_sub_nsec(&end, &start);
-    if(d < 1000000000 || d > 1050000000) {
+    if (d < 1000000000 || d > 1050000000) {
         CTEST_FATALF("got %ld, want [1000000000, 1050000000]", (long)d);
     }
 }
 
 int main() {
-    ctest_test_suit* suit = ctest_create_test_suit();
+    ctest_test_suit* suit = ctest_test_suit_create();
     CTEST_TEST_SUIT_ADD(suit, test_fail);
     CTEST_TEST_SUIT_ADD(suit, test_pass);
     CTEST_TEST_SUIT_ADD(suit, test_get_time);
