@@ -84,7 +84,7 @@ typedef struct ctest_test ctest_test;
 
 typedef void (*ctest_test_func)(ctest_test* test, ctest_options* options);
 
-ctest_test_suit* ctest_test_suit_create();
+ctest_test_suit* ctest_test_suit_create(const char* name);
 void ctest_test_suit_free(ctest_test_suit* suit);
 void ctest_test_suit_add(ctest_test_suit* suit, char* name, ctest_test_func f);
 /**
@@ -114,6 +114,14 @@ void ctest_test_fail(ctest_test* test, ctest_options* options);
  * Marks the test as having failed but continues execution.
  */
 #define CTEST_FAIL() ctest_test_fail(test_, options_);
+/**
+ * Equivalent to CTEST_LOG() followed by CTEST_FAIL().
+ */
+#define CTEST_FAILF(fmt, ...)           \
+    {                                   \
+        CTEST_LOGF(fmt, ##__VA_ARGS__); \
+        CTEST_FAIL();                   \
+    }
 /**
  * Marks the function as having failed and stops its execution using a return statement.
  */

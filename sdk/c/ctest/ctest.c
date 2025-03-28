@@ -8,6 +8,192 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Define ENABLE_LKDBG and use lkdbg_report to report memory leaks.
+#ifdef ENABLE_LKDBG
+typedef struct lkdbg_alloc_record {
+    const char* file;
+    int line;
+    void* p;
+    size_t size;
+} lkdbg_alloc_record;
+
+typedef struct lkdbg_alloc_records {
+    size_t len;
+    size_t cap;
+    lkdbg_alloc_record* records;
+} lkdbg_alloc_records;
+
+lkdbg_alloc_records* lkdbg_alloc_records_init(lkdbg_alloc_records* records) {
+    records->len = 0;
+    records->cap = 0;
+    records->records = NULL;
+    return records;
+}
+
+void lkdbg_alloc_records_destroy(lkdbg_alloc_records* records) {
+    free(records->records);
+    records->cap = records->len = 0;
+    records->records = NULL;
+}
+
+void lkdbg_alloc_records_dump(lkdbg_alloc_records* records) {
+    printf("[ALLOC RECORDS] %d ", (int)records->len);
+    for (size_t i = 0; i < records->len; i++) {
+        lkdbg_alloc_record* r = &records->records[i];
+        printf("%d:{%s:%d %p %" PRId64 "}, ", (int)i, r->file, r->line, r->p, r->size);
+    }
+    printf("\n");
+}
+
+// Binary search p in records.
+// Returns the index of the first p in records, or the position where p should be inserted.
+int lkdbg_alloc_records_binary_search_ceiling(lkdbg_alloc_records* records, void* p) {
+    size_t i = 0;
+    size_t j = records->len;
+    while (i < j) {
+        int h = (i + j) / 2;
+        if (records->records[h].p < p) {
+            i = h + 1;
+        } else {
+            j = h;
+        }
+    }
+
+    return i;
+}
+
+void lkdbg_alloc_records_insert(lkdbg_alloc_records* records,
+                                void* p, size_t size, const char* file, int line) {
+    // binary search.
+    int i = lkdbg_alloc_records_binary_search_ceiling(records, p);
+
+    // grow
+    size_t cap = records->len + 1;
+    if (records->cap < cap) {
+        records->cap = cap * 2;
+        records->records = realloc(records->records, records->cap * sizeof(lkdbg_alloc_record));
+        if (!records->records) {
+            fprintf(stderr, "realloc failed!");
+            abort();
+        }
+    }
+
+    // insert
+    memmove(records->records + i + 1, records->records + i, sizeof(lkdbg_alloc_record) * (records->len - i));
+    lkdbg_alloc_record* r = records->records + i;
+    r->file = file;
+    r->line = line;
+    r->p = p;
+    r->size = size;
+    records->len++;
+}
+
+/**
+ * Return the index of the first p in records, or -(pos+1) where pos is
+ * the position where p should be inserted.
+ */
+int lkdbg_alloc_records_find(lkdbg_alloc_records* records, void* p) {
+    int i = lkdbg_alloc_records_binary_search_ceiling(records, p);
+    return (i < records->len && records->records[i].p == p) ? i : -(i + 1);
+}
+
+void lkdbg_alloc_records_delete(lkdbg_alloc_records* records, int i) {
+    memmove(records->records + i, records->records + i + 1, ((int)records->len - i - 1) * sizeof(lkdbg_alloc_record));
+    records->len--;
+}
+
+static lkdbg_alloc_records lkdbg_records = {0};
+
+void* lkdbg_malloc(size_t n, const char* file, int line) {
+    void* p = malloc(n);
+    if (p) {
+        lkdbg_alloc_records_insert(&lkdbg_records, p, n, file, line);
+    }
+#ifdef DEBUG_LKDBG
+    printf("lkdbg_malloc %" PRId64 " %p\n", n, p);
+    lkdbg_alloc_records_dump(&lkdbg_records);
+#endif
+    return p;
+}
+
+void* lkdbg_calloc(size_t count, size_t size, const char* file, int line) {
+    void* p = calloc(count, size);
+    if (p) {
+        lkdbg_alloc_records_insert(&lkdbg_records, p, size, file, line);
+    }
+#ifdef DEBUG_LKDBG
+    printf("lkdbg_calloc %" PRId64 " %" PRId64 " %p\n", count, size, p);
+    lkdbg_alloc_records_dump(&lkdbg_records);
+#endif
+    return p;
+}
+
+void* lkdbg_realloc(void* p, size_t size, const char* file, int line) {
+    int i = -1;
+    if (p) {
+        i = lkdbg_alloc_records_find(&lkdbg_records, p);
+        if (i < 0) {
+            fprintf(stderr, "[LKDBG] %s:%d `realloc` an invalid pointer %p\n", file, line, p);
+        }
+    }
+    void* p2 = realloc(p, size);
+    if (!p2) {
+        return p2;
+    }
+    if (p2 == p) {
+        if (i >= 0) {
+            lkdbg_alloc_record* record = &lkdbg_records.records[i];
+            record->file = file;
+            record->line = line;
+        }
+    } else {
+        if (i >= 0) {
+            lkdbg_alloc_records_delete(&lkdbg_records, i);
+        }
+        lkdbg_alloc_records_insert(&lkdbg_records, p2, size, file, line);
+    }
+#ifdef DEBUG_LKDBG
+    printf("lkdbg_realloc %p %" PRId64 " %p\n", p, (int)size, p2);
+    lkdbg_alloc_records_dump(&lkdbg_records);
+#endif
+    return p2;
+}
+
+void lkdbg_free(void* p, const char* file, int line) {
+    free(p);
+    if (!p) {
+        return;
+    }
+    int i = lkdbg_alloc_records_find(&lkdbg_records, p);
+    if (i < 0) {
+        fprintf(stderr, "[LKDBG] %s:%d `free` an invalid pointer %p\n", file, line, p);
+    } else {
+        lkdbg_alloc_records_delete(&lkdbg_records, i);
+    }
+#ifdef DEBUG_LKDBG
+    printf("lkdbg_free %p\n", p);
+    lkdbg_alloc_records_dump(&lkdbg_records);
+#endif
+}
+
+void lkdbg_report() {
+    if (lkdbg_records.len == 0) {
+        return;
+    }
+    for (size_t i = 0; i < lkdbg_records.len; i++) {
+        lkdbg_alloc_record* record = &lkdbg_records.records[i];
+        fprintf(stderr, "[LKDBG] memory leak: %p size %" PRId64 " at %s:%d\n", record->p, record->size, record->file, record->line);
+    }
+    lkdbg_alloc_records_destroy(&lkdbg_records);
+}
+
+#define malloc(n) lkdbg_malloc((n), __FILE__, __LINE__)
+#define calloc(n, size) lkdbg_calloc((n), (size), __FILE__, __LINE__)
+#define realloc(p, n) lkdbg_realloc((p), (n), __FILE__, __LINE__)
+#define free(p) lkdbg_free((p), __FILE__, __LINE__)
+
+#endif
+
 #ifdef NDEBUG
 
 #define ERROR_ABORT_MSG(func, msg)                               \
@@ -24,16 +210,16 @@
 
 #else
 
-#define ERROR_ABORT_MSG(func, msg)                                                          \
-    {                                                                                       \
-        fprintf(stderr, "[ERROR] %s:%d: '%s' failed: %s\n", __FILE__, __LINE__, func, msg); \
-        abort();                                                                            \
+#define ERROR_ABORT_MSG(msg)                                                                        \
+    {                                                                                               \
+        fprintf(stderr, "[ERROR] %s:%d in function '%s': %s\n", __FILE__, __LINE__, __func__, msg); \
+        abort();                                                                                    \
     }
 
-#define ERROR_ABORT(func)                                                          \
-    {                                                                              \
-        fprintf(stderr, "[ERROR] %s:%d: '%s' failed\n", __FILE__, __LINE__, func); \
-        abort();                                                                   \
+#define ERROR_ABORT()                                                                    \
+    {                                                                                    \
+        fprintf(stderr, "[ERROR] %s:%d in function '%s'", __FILE__, __LINE__, __func__); \
+        abort();                                                                         \
     }
 
 #endif
@@ -79,10 +265,26 @@ void* mem_block_data(mem_block* mem) {
 /**
  * Clears data of mem but keeps it's capacity.
  */
-void mem_block_reset(mem_block* mem) {
+mem_block* mem_block_reset(mem_block* mem) {
     mem->len = 0;
+    return mem;
 }
 
+/**
+ * Trims extra trailing capacity.
+ */
+mem_block* mem_block_trim(mem_block* mem) {
+    if (mem->data) {
+        mem->cap = mem->len;
+        mem->data = realloc(mem->data, mem->len);
+    }
+    return mem;
+}
+
+/**
+ * Detaches the memory block from mem and returns it.
+ * After detaching, mem is reinitialized.
+ */
 void* mem_block_detach(mem_block* mem) {
     void* p = mem->data;
     mem->len = mem->cap = 0;
@@ -91,25 +293,45 @@ void* mem_block_detach(mem_block* mem) {
 }
 
 /**
+ * Returns a pointer to a memory block, which is a duplicate of the content of m.
+ * The returned pointer must be passed to free to avoid a memory leak.
+ * If the length of memory is 0, NULL is returned.
+ */
+void* mem_block_dup(mem_block* mem) {
+    if (mem->len == 0) {
+        return NULL;
+    }
+    void* p = malloc(mem->len);
+    if (!p)
+        ERROR_ABORT_MSG("malloc");
+    return memcpy(p, mem->data, mem->len);
+}
+
+/**
  * Grows the block's capacity, if necessary, to guarantee space for another n bytes.
  * After mem_block_grow(mem, n), at least n bytes can be written to mem without another allocation.
  */
-void mem_block_grow(mem_block* mem, size_t n) {
+mem_block* mem_block_grow(mem_block* mem, size_t n) {
     size_t cap = mem->len + n;
     if (mem->cap < cap) {
         mem->cap = cap < 1024 ? cap * 2 : cap * 3 / 2;
         mem->data = realloc(mem->data, mem->cap);
-        if (!mem->data) ERROR_ABORT_MSG("mem_block_ensure_cap", "realloc");
+        if (!mem->data) ERROR_ABORT_MSG("realloc");
     }
+    return mem;
 }
 
-void mem_block_append(mem_block* mem, void* src, size_t src_size) {
+/**
+ * Appends src_size bytes from src to the end of mem.
+ */
+mem_block* mem_block_append(mem_block* mem, void* src, size_t src_size) {
     if (src == NULL || src_size == 0) {
-        return;
+        return mem;
     }
     mem_block_grow(mem, src_size);
     memcpy((uint8_t*)mem->data + mem->len, src, src_size);
     mem->len += src_size;
+    return mem;
 }
 
 /**
@@ -129,62 +351,64 @@ void* mem_block_expand(mem_block* mem, size_t n) {
  *
  * If len < 0, the segment expands to the end.
  */
-void mem_block_delete(mem_block* mem, size_t start, int len) {
+mem_block* mem_block_delete(mem_block* mem, size_t start, int len) {
     if (start >= mem->len)
-        ERROR_ABORT_MSG("mem_block_delete", "index out of range");
+        ERROR_ABORT_MSG("index out of range");
     size_t del_len = len < 0 ? mem->len - start : len;
     size_t move_start = start + del_len;
     if (move_start > mem->len)
-        ERROR_ABORT_MSG("mem_block_delete", "index out of range");
+        ERROR_ABORT_MSG("index out of range");
     memmove((uint8_t*)mem->data + start, (uint8_t*)mem->data + move_start, mem->len - move_start);
     mem->len -= del_len;
+    return mem;
 }
 
-#define mem_block_append_t(mem, type, value)        \
-    {                                               \
-        type temp = value;                          \
-        mem_block_append(mem, &temp, sizeof(temp)); \
-    }
+/**
+ * Append a value of specified type to the end of mem.
+ */
+#define mem_block_append_t(mem, type, value) (*(type*)(mem_block_expand((mem), sizeof(type))) = value, (mem))
 
 /**
  * See mem_block_append_sprintf for details.
  */
-void mem_block_append_vsprintf(mem_block* mem, bool include0, const char* format, va_list args) {
+mem_block* mem_block_append_vsprintf(mem_block* mem, bool include0, const char* format, va_list args) {
     va_list args2;
     va_copy(args2, args);
 
     int n = vsnprintf(NULL, 0, format, args);
     if (n < 0)
-        ERROR_ABORT_MSG("mem_block_snprintf", "vsnprintf");
+        ERROR_ABORT_MSG("vsnprintf");
     if (!include0 && n == 0) {
         va_end(args2);
-        return;
+        return mem;
     }
 
     mem_block_grow(mem, n + 1);
     n = vsnprintf((char*)mem->data + mem->len, n + 1, format, args2);
     if (n < 0)
-        ERROR_ABORT_MSG("mem_block_snprintf", "vsnprintf");
+        ERROR_ABORT_MSG("vsnprintf");
     mem->len += (n + (include0 ? 1 : 0));
     va_end(args2);
+    return mem;
 }
 
 /**
  * Appends the result of formatted string to mem.
  * If include0 is true, the terminating zero of formatted string is included.
  */
-void mem_block_append_sprintf(mem_block* mem, bool include0, const char* format, ...) {
+mem_block* mem_block_append_sprintf(mem_block* mem, bool include0, const char* format, ...) {
     va_list args;
     va_start(args, format);
     mem_block_append_vsprintf(mem, include0, format, args);
     va_end(args);
+    return mem;
 }
 
 #define mem_block_array_size_t(mem, type) ((mem)->len / sizeof(type))
 
 void* mem_block_array_index(mem_block* mem, size_t elem_size, size_t i) {
     if (i >= mem->len / elem_size)
-        ERROR_ABORT_MSG("mem_block_array_index", "index out of range");
+        ERROR_ABORT_MSG("index out of range");
     return (uint8_t*)mem->data + elem_size * i;
 }
 
@@ -234,7 +458,7 @@ typedef struct timespec time_spec;
 
 void get_time(time_spec* t) {
     if (clock_gettime(CLOCK_MONOTONIC, t) != 0) {
-        ERROR_ABORT_MSG("clock_gettime", strerror(errno));
+        ERROR_ABORT_MSG(strerror(errno));
     }
 }
 
@@ -340,8 +564,7 @@ static char* escape_json_string(mem_block* mem, const char* str) {
                 mem_block_append_t(mem, char, *p);
         }
     }
-    mem_block_append_t(mem, char, 0);  // terminating zero.
-    return (char*)mem->data;
+    return mem_block_append_t(mem, char, 0)->data;  // add terminating zero.
 }
 
 static void* json_encoder_on_test_suit_begin(ctest_printer print, void* printer_cookie,
@@ -395,7 +618,8 @@ static void json_encoder_on_log_message(ctest_printer print, void* printer_cooki
     json_encoder_test_cookie* cookie = test;
     bool* has_log_message = &cookie->has_log_message;
     mem_block_reset(&cookie->escape_buf);
-    char* file_str = strdup(escape_json_string(&cookie->escape_buf, file));
+    escape_json_string(&cookie->escape_buf, file);
+    char* file_str = mem_block_dup(&cookie->escape_buf);
     mem_block_reset(&cookie->escape_buf);
     print(printer_cookie, ",%s{\"file\":\"%s\",\"line\":%d,\"message\":\"%s\"}",
           *has_log_message ? "" : "\"log\":[",
@@ -420,7 +644,7 @@ static void console_printer(void* cookie, const char* format, ...) {
     va_list args;
     va_start(args, format);
     if (vprintf(format, args) < 0)
-        ERROR_ABORT_MSG("console_print", "vprintf");
+        ERROR_ABORT_MSG("vprintf");
     va_end(args);
 }
 
@@ -484,21 +708,24 @@ static void log_message_destroy(log_message* msg) {
 }
 
 typedef struct ctest_test {
-    const char* name;  // name of test. WILL NOT FREE.
+    const char* name;
     ctest_test_func f;
     bool failed;
     mem_block log_messages;
     void* cookie;
 } ctest_test;
 
-static ctest_test* ctest_test_create() {
+static ctest_test* ctest_test_create(const char* name, ctest_test_func f) {
     ctest_test* test = calloc(1, sizeof(ctest_test));
     mem_block_init(&test->log_messages);
+    test->name = name;
+    test->f = f;
     return test;
 }
 
 static void ctest_test_free(ctest_test* test) {
-    for (size_t i = 0; i < mem_block_array_size_t(&test->log_messages, log_message); i++) {
+    const size_t message_count = mem_block_array_size_t(&test->log_messages, log_message);
+    for (size_t i = 0; i < message_count; i++) {
         log_message_destroy(&mem_block_array_index_t(&test->log_messages, log_message, i));
     }
     free(test);
@@ -540,38 +767,35 @@ void ctest_test_fail(ctest_test* test, ctest_options* options) {
 
 typedef struct ctest_test_suit {
     const char* name;
-    size_t test_count;
-    ctest_test** tests;
+    mem_block tests;
     void* cookie;
 } ctest_test_suit;
 
 ctest_test_suit* ctest_test_suit_create(const char* name) {
     ctest_test_suit* suit = (ctest_test_suit*)calloc(1, sizeof(ctest_test_suit));
     suit->name = name;
+    mem_block_init(&suit->tests);
     return suit;
 }
 
 void ctest_test_suit_free(ctest_test_suit* suit) {
     assert(suit);
-    for (size_t i = 0; i < suit->test_count; i++) {
-        ctest_test_free(suit->tests[i]);
+    for (size_t i = 0; i < mem_block_array_size_t(&suit->tests, ctest_test*); i++) {
+        ctest_test_free(mem_block_array_index_t(&suit->tests, ctest_test*, i));
     }
+    mem_block_destroy(&suit->tests);
     free(suit);
 }
 
 void ctest_test_suit_add(ctest_test_suit* suit, char* name, ctest_test_func f) {
-    assert(f);
-    suit->test_count++;
-    suit->tests = realloc(suit->tests, sizeof(suit->tests[0]) * suit->test_count);
-    if (!suit->tests)
-        ERROR_ABORT("realloc");
-    ctest_test* test = ctest_test_create();
+    if (!f)
+        ERROR_ABORT_MSG("NULL test function");
+
+    ctest_test* test = ctest_test_create(name, f);
     if (!test)
-        ERROR_ABORT("ctest_test_create");
-    suit->tests[suit->test_count - 1] = test;
-    test->name = name;
-    test->f = f;
-    test->failed = false;
+        ERROR_ABORT_MSG("ctest_test_create");
+
+    mem_block_append_t(&suit->tests, ctest_test*, test);
 }
 
 bool ctest_test_suit_run(ctest_test_suit* suit, ctest_options* options) {
@@ -580,25 +804,27 @@ bool ctest_test_suit_run(ctest_test_suit* suit, ctest_options* options) {
         options->printer_cookie = NULL;
     }
 
+    const size_t test_count = mem_block_array_size_t(&suit->tests, ctest_test*);
     if (options->encoder.on_test_suit_begin) {
-        suit->cookie = options->encoder.on_test_suit_begin(options->printer, options->printer_cookie, suit->name, suit->test_count);
+        suit->cookie = options->encoder.on_test_suit_begin(options->printer, options->printer_cookie,
+                                                           suit->name, test_count);
     }
 
     time_spec start;
     get_time(&start);
 
-    for (size_t i = 0; i < suit->test_count; i++) {
-        ctest_test* test = suit->tests[i];
+    for (size_t i = 0; i < test_count; i++) {
+        ctest_test* test = mem_block_array_index_t(&suit->tests, ctest_test*, i);
         if (options->encoder.on_test_begin) {
             test->cookie = options->encoder.on_test_begin(options->printer, options->printer_cookie,
                                                           test->name,
-                                                          suit->test_count, i);
+                                                          test_count, i);
         }
         test->f(test, options);
         if (options->encoder.on_test_end) {
             options->encoder.on_test_end(options->printer, options->printer_cookie,
                                          test->name, test->cookie,
-                                         suit->test_count, i,
+                                         test_count, i,
                                          test->failed);
         }
     }
@@ -606,8 +832,8 @@ bool ctest_test_suit_run(ctest_test_suit* suit, ctest_options* options) {
     get_time(&end);
 
     size_t failure_count = 0;
-    for (size_t i = 0; i < suit->test_count; i++) {
-        if (suit->tests[i]->failed) {
+    for (size_t i = 0; i < test_count; i++) {
+        if (mem_block_array_index_t(&suit->tests, ctest_test*, i)->failed) {
             failure_count++;
         }
     }
@@ -615,7 +841,7 @@ bool ctest_test_suit_run(ctest_test_suit* suit, ctest_options* options) {
     if (options->encoder.on_test_suit_end) {
         options->encoder.on_test_suit_end(options->printer, options->printer_cookie,
                                           suit->name, suit->cookie,
-                                          suit->test_count, failure_count,
+                                          test_count, failure_count,
                                           time_sub_nsec(&end, &start));
     }
     return failure_count == 0;
@@ -649,25 +875,25 @@ CTEST_TEST_FUNC(test_mem_block_append) {
 
     size_t len = mem_block_len(mem);
     if (len != 3) {
-        CTEST_FATALF("want %d, got %d", 3, len);
+        CTEST_FAILF("want %d, got %d", 3, len);
     }
 
     size_t cap = mem_block_cap(mem);
     if (cap != 6) {
-        CTEST_FATALF("want %d, got %d", 6, cap);
+        CTEST_FAILF("want %d, got %d", 6, cap);
     }
 
     char c0 = mem_block_array_index_t(mem, char, 0);
     if (c0 != 'a') {
-        CTEST_FATALF("want %c, got %c", 'a', c0);
+        CTEST_FAILF("want %c, got %c", 'a', c0);
     }
     char c1 = mem_block_array_index_t(mem, char, 1);
     if (c1 != 'b') {
-        CTEST_FATALF("want %c, got %c", 'b', c1);
+        CTEST_FAILF("want %c, got %c", 'b', c1);
     }
     char c2 = mem_block_array_index_t(mem, char, 2);
     if (c2 != 'c') {
-        CTEST_FATALF("want %c, got %c", 'c', c2);
+        CTEST_FAILF("want %c, got %c", 'c', c2);
     }
     mem_block_free(mem);
 }
@@ -679,28 +905,28 @@ CTEST_TEST_FUNC(test_mem_block_sprintf) {
 
     size_t len = mem_block_len(mem);
     if (len != 7) {
-        CTEST_FATALF("want %d, got %d", 7, len);
+        CTEST_FAILF("want %d, got %d", 7, len);
     }
 
     size_t cap = mem_block_cap(mem);
     if (cap != 16) {
-        CTEST_FATALF("want %d, got %d", 16, cap);
+        CTEST_FAILF("want %d, got %d", 16, cap);
     }
     mem_block_append_t(mem, char, 0);  // makes it zero-terminated.
     const char* str = mem_block_data(mem);
     if (strcmp(str, "-abc123") != 0) {
-        CTEST_FATALF("want %s, got %s", "-abc123", str);
+        CTEST_FAILF("want %s, got %s", "-abc123", str);
     }
 
     mem_block_delete(mem, mem_block_len(mem) - 1, 1);
     mem_block_append_sprintf(mem, true, "|");
     len = mem_block_len(mem);
     if (len != 9) {
-        CTEST_FATALF("want %d, got %d", 9, len);
+        CTEST_FAILF("want %d, got %d", 9, len);
     }
     str = mem_block_data(mem);
     if (strcmp(str, "-abc123|") != 0) {
-        CTEST_FATALF("want %s, got %s", "-abc123", str);
+        CTEST_FAILF("want %s, got %s", "-abc123", str);
     }
 
     mem_block_free(mem);
@@ -712,7 +938,7 @@ CTEST_TEST_FUNC(test_mem_block_delete) {
     mem_block_delete(mem, 8, 2);
     size_t len = mem_block_len(mem);
     if (len != 8) {
-        CTEST_FATALF("want %d, got %d", 8, len);
+        CTEST_FAILF("want %d, got %d", 8, len);
     }
     if (memcmp(mem_block_data(mem), "01234567", len) != 0) {
         CTEST_FAIL();
@@ -721,7 +947,7 @@ CTEST_TEST_FUNC(test_mem_block_delete) {
     mem_block_delete(mem, 0, 1);
     len = mem_block_len(mem);
     if (len != 7) {
-        CTEST_FATALF("want %d, got %d", 7, len);
+        CTEST_FAILF("want %d, got %d", 7, len);
     }
     if (memcmp(mem_block_data(mem), "1234567", len) != 0) {
         CTEST_FAIL();
@@ -730,7 +956,7 @@ CTEST_TEST_FUNC(test_mem_block_delete) {
     mem_block_delete(mem, 1, 2);
     len = mem_block_len(mem);
     if (len != 5) {
-        CTEST_FATALF("want %d, got %d", 5, len);
+        CTEST_FAILF("want %d, got %d", 5, len);
     }
     if (memcmp(mem_block_data(mem), "14567", len) != 0) {
         CTEST_FAIL();
@@ -739,8 +965,66 @@ CTEST_TEST_FUNC(test_mem_block_delete) {
     mem_block_delete(mem, 0, -1);
     len = mem_block_len(mem);
     if (len != 0) {
-        CTEST_FATALF("want %d, got %d", 0, len);
+        CTEST_FAILF("want %d, got %d", 0, len);
     }
+
+    mem_block_free(mem);
+}
+
+CTEST_TEST_FUNC(test_mem_block_reset) {
+    mem_block* mem = mem_block_create();
+    mem_block_append(mem, "abc", 3);
+    size_t old_cap = mem_block_cap(mem);
+    mem_block_reset(mem);
+    size_t cap = mem_block_cap(mem);
+    if (cap != old_cap) {
+        CTEST_FAILF("want %d, got %d", old_cap, cap);
+    }
+    size_t len = mem_block_len(mem);
+    if (len != 0) {
+        CTEST_FAILF("want %d, got %d", 0, len);
+    }
+
+    mem_block_free(mem);
+}
+
+CTEST_TEST_FUNC(test_mem_block_trim) {
+    mem_block* mem = mem_block_create();
+    mem_block_append(mem, "abc", 3);
+    mem_block_trim(mem);
+    size_t len = mem_block_len(mem);
+    if (len != 3) {
+        CTEST_FAILF("want %d, got %d", 3, len);
+    }
+    size_t cap = mem_block_cap(mem);
+    if (cap != len) {
+        CTEST_FAILF("want %d, got %d", len, cap);
+    }
+    if (memcmp(mem_block_data(mem), "abc", 3) != 0) {
+        CTEST_FAIL();
+    }
+
+    mem_block_free(mem);
+}
+
+CTEST_TEST_FUNC(test_mem_block_detach) {
+    mem_block* mem = mem_block_create();
+    mem_block_append(mem, "abc", 3);
+    void* p = mem_block_detach(mem);
+    size_t len = mem_block_len(mem);
+    if (len != 0) {
+        CTEST_FAILF("want %d, got %d", 0, len);
+    }
+    size_t cap = mem_block_cap(mem);
+    if (cap != 0) {
+        CTEST_FAILF("want %d, got %d", 0, len);
+    }
+    if (memcmp(p, "abc", 3) != 0) {
+        CTEST_FAIL();
+    }
+
+    free(p);
+    mem_block_free(mem);
 }
 
 CTEST_TEST_FUNC(test_log) {
@@ -749,12 +1033,16 @@ CTEST_TEST_FUNC(test_log) {
 }
 
 int main() {
-    ctest_test_suit* suit = ctest_test_suit_create("a/b");
+    ctest_test_suit* suit = ctest_test_suit_create("ctest");
+
     CTEST_TEST_SUIT_ADD(suit, test_mem_block_create);
     CTEST_TEST_SUIT_ADD(suit, test_mem_block_init);
     CTEST_TEST_SUIT_ADD(suit, test_mem_block_append);
     CTEST_TEST_SUIT_ADD(suit, test_mem_block_sprintf);
     CTEST_TEST_SUIT_ADD(suit, test_mem_block_delete);
+    CTEST_TEST_SUIT_ADD(suit, test_mem_block_reset);
+    CTEST_TEST_SUIT_ADD(suit, test_mem_block_trim);
+
     CTEST_TEST_SUIT_ADD(suit, test_log);
 
     ctest_options options = {0};
@@ -768,6 +1056,12 @@ int main() {
 
     printf("JSON OUTPUT:\n%s\n", string_printer_str(printer));
     string_printer_free(printer);
+
+    ctest_test_suit_free(suit);
+
+#ifdef ENABLE_LKDBG
+    lkdbg_report();
+#endif
     return 0;
 }
 
