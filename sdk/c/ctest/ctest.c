@@ -528,11 +528,13 @@ static void* text_encoder_on_test_begin(ctest_printer print, void* printer_cooki
 
 static void text_encoder_on_test_end(ctest_printer print, void* printer_cookie,
                                      const char* name, void* test_cookie,
-                                     size_t count, size_t index, bool failed) {
+                                     size_t count, size_t index,
+                                     bool failed, int64_t duration) {
+    time_str d_str = time_format_nsec(duration);
     if (failed) {
-        print(printer_cookie, "    --- FAIL: %s\n", name);
+        print(printer_cookie, "    --- FAIL: %s (%s%s)\n", name, d_str.number, d_str.unit);
     } else {
-        print(printer_cookie, "    --- PASS: %s\n", name);
+        print(printer_cookie, "    --- PASS: %s (%s%s)\n", name, d_str.number, d_str.unit);
     }
 }
 
@@ -548,14 +550,16 @@ static void text_encoder_on_log_message(ctest_printer print, void* printer_cooki
 static void text_encoder_on_benchmark_end(ctest_printer print, void* printer_cookie,
                                           const char* name, void* benchmark_cookie,
                                           ctest_benchmark_data* data,
-                                          size_t count, size_t index, bool failed) {
+                                          size_t count, size_t index,
+                                          bool failed, int64_t duration) {
     if (data->op == 0) {
         fprintf(stderr, "CTEST_LOOP is not used in benchmark function '%s'\n", name);
         abort();
         return;
     }
     if (failed) {
-        print(printer_cookie, "    --- FAIL: %s\n", name);
+        time_str d_str = time_format_nsec(duration);
+        print(printer_cookie, "    --- FAIL: %s (%s%s)\n", name, d_str.number, d_str.unit);
         return;
     }
     time_str duration_str = time_format_nsec(data->ns / data->op);
@@ -644,7 +648,7 @@ typedef struct json_encoder_cookie {
     mem_block escape_buf;
 } json_encoder_cookie;
 
-static json_encoder_cookie* json_encoder_test_cookie_create() {
+static json_encoder_cookie* json_encoder_cookie_create() {
     json_encoder_cookie* cookie = calloc(1, sizeof(json_encoder_cookie));
     mem_block_init(&cookie->escape_buf);
     return cookie;
@@ -656,16 +660,19 @@ static void json_encoder_cookie_free(json_encoder_cookie* cookie) {
 }
 
 static void* json_encoder_on_test_begin(ctest_printer print, void* printer_cookie, const char* name, size_t test_count, size_t index) {
-    json_encoder_cookie* cookie = json_encoder_test_cookie_create();
+    json_encoder_cookie* cookie = json_encoder_cookie_create();
     print(printer_cookie, "%s{\"name\":\"%s\"", index ? "," : "", escape_json_string(&cookie->escape_buf, name));
     return cookie;
 }
 
-static void json_encoder_on_test_end(ctest_printer print, void* printer_cookie, const char* name, void* test, size_t test_count, size_t index, bool failed) {
-    print(printer_cookie, "%s,\"pass\":%s}",
-          ((json_encoder_cookie*)test)->has_log_message ? "]" : "",
-          failed ? "false" : "true");
-    json_encoder_cookie_free(test);
+static void json_encoder_on_test_end(ctest_printer print, void* printer_cookie,
+                                     const char* name, void* cookie,
+                                     size_t test_count, size_t index,
+                                     bool failed, int64_t duration) {
+    print(printer_cookie, "%s,\"pass\":%s,\"duration\":%" PRId64 "}",
+          ((json_encoder_cookie*)cookie)->has_log_message ? "]" : "",
+          failed ? "false" : "true", duration);
+    json_encoder_cookie_free(cookie);
 }
 
 static void json_encoder_on_log_message(ctest_printer print, void* printer_cookie, const char* test_name, void* test, const char* file, int line, const char* message) {
@@ -698,31 +705,34 @@ static void json_encoder_on_teardown_benchmarks(ctest_printer print, void* print
 static void* json_encoder_on_benchmark_begin(ctest_printer print, void* printer_cookie,
                                              const char* name,
                                              size_t benchmark_count, size_t index) {
-    return NULL;
+    json_encoder_cookie* cookie = json_encoder_cookie_create();
+    print(printer_cookie, "%s{\"name\":\"%s\"",
+          index ? "," : "",
+          escape_json_string(&cookie->escape_buf, name));
+    return cookie;
 }
 
 static void json_encoder_on_benchmark_end(ctest_printer print, void* printer_cookie,
                                           const char* name, void* benchmark_cookie,
                                           ctest_benchmark_data* data,
-                                          size_t count, size_t index, bool failed) {
+                                          size_t count, size_t index,
+                                          bool failed, int64_t duration) {
     if (data->op == 0) {
         fprintf(stderr, "CTEST_LOOP is not used in benchmark function '%s'\n", name);
         abort();
         return;
     }
-    mem_block escape_buf;
-    mem_block_init(&escape_buf);
+    json_encoder_cookie* cookie = benchmark_cookie;
     if (failed) {
-        print(printer_cookie, "%s{\"name\":\"%s\",\"pass\":false}",
-              index ? "," : "",
-              escape_json_string(&escape_buf, name));
+        print(printer_cookie, "%s,\"pass\":false,\"duration\":%" PRId64 "}",
+              cookie->has_log_message ? "]" : ":",
+              duration);
     } else {
-        print(printer_cookie, "%s{\"name\":\"%s\",\"ops\":%" PRIu64 ",\"ns_per_op\":%" PRIu64 ",\"pass\":%s}",
-              index ? "," : "",
-              escape_json_string(&escape_buf, name),
+        print(printer_cookie, "%s,\"ops\":%" PRIu64 ",\"ns_per_op\":%" PRIu64 ",\"pass\":%s}",
+              cookie->has_log_message ? "]" : ":",
               data->op, data->ns / data->op, failed ? "false" : "true");
     }
-    mem_block_destroy(&escape_buf);
+    json_encoder_cookie_free(cookie);
 }
 
 ctest_options* ctest_options_set_json_encoder(ctest_options* options) {
@@ -815,6 +825,7 @@ typedef struct ctest_test_base {
     void* cookie;
     mem_block log_messages;
     bool failed;
+    bool show_log;  // always show log.
 } ctest_test_base;
 
 static void ctest_test_base_init(ctest_test_base* base, const char* name) {
@@ -837,7 +848,7 @@ void ctest_test_base_log(ctest_test_base* base, ctest_options* options, const ch
     mem_block_init(&mem);
     mem_block_append_vsprintf(&mem, true, format, args);
     char* message = mem_block_detach(&mem);
-    if (options->verbose || base->failed) {
+    if (base->show_log || options->verbose || base->failed) {
         options->encoder.on_test_log_message(options->printer, options->printer_cookie,
                                              base->name, base->cookie,
                                              file, line, message);
@@ -889,6 +900,7 @@ typedef struct ctest_benchmark {
 static ctest_benchmark* ctest_benchmark_create(const char* name, ctest_benchmark_func f) {
     ctest_benchmark* bench = calloc(1, sizeof(ctest_benchmark));
     ctest_test_base_init(&bench->base, name);
+    bench->base.show_log = true;  // benchmarks always show log.
     bench->f = f;
     return bench;
 }
@@ -974,7 +986,11 @@ static size_t ctest_test_suit_run_tests(ctest_test_suit* suit, ctest_options* op
                                                                test->base.name,
                                                                test_count, i);
         }
+        time_spec start, end;
+        get_time(&start);
         test->f(&test->base, options);
+        get_time(&end);
+
         if (test->base.failed) {
             failure_count++;
         }
@@ -982,7 +998,7 @@ static size_t ctest_test_suit_run_tests(ctest_test_suit* suit, ctest_options* op
             options->encoder.on_test_end(options->printer, options->printer_cookie,
                                          test->base.name, test->base.cookie,
                                          test_count, i,
-                                         test->base.failed);
+                                         test->base.failed, time_sub_nsec(&end, &start));
         }
     }
 
@@ -1055,8 +1071,11 @@ static size_t ctest_test_suit_run_benchmarks(ctest_test_suit* suit, ctest_option
                                                                      bench->base.name,
                                                                      benchmark_count, i);
         }
+        time_spec start, end;
+        get_time(&start);
         ctest_benchmark_data data = {0};
         run_benchmark(bench, options, &data);
+        get_time(&end);
         if (bench->base.failed) {
             failure_count++;
         }
@@ -1065,7 +1084,8 @@ static size_t ctest_test_suit_run_benchmarks(ctest_test_suit* suit, ctest_option
             options->encoder.on_benchmark_end(options->printer, options->printer_cookie,
                                               bench->base.name, bench->base.cookie,
                                               &data,
-                                              benchmark_count, i, bench->base.failed);
+                                              benchmark_count, i,
+                                              bench->base.failed, time_sub_nsec(&end, &start));
         }
     }
 
@@ -1309,23 +1329,23 @@ void sleep_ms(uint32_t ms) {
 CTEST_BENCHMARK_FUNC(benchmark_sleep) {
     while (CTEST_LOOP) {
         sleep_ms(10);
-        CTEST_FAIL();
     }
+    CTEST_LOGF("fail!");
 }
 
 int main() {
     ctest_test_suit* suit = ctest_test_suit_create("ctest");
 
-    // CTEST_TEST_SUIT_ADD_TEST(suit, test_mem_block_create);
-    // CTEST_TEST_SUIT_ADD_TEST(suit, test_mem_block_init);
-    // CTEST_TEST_SUIT_ADD_TEST(suit, test_mem_block_append);
-    // CTEST_TEST_SUIT_ADD_TEST(suit, test_mem_block_sprintf);
-    // CTEST_TEST_SUIT_ADD_TEST(suit, test_mem_block_delete);
-    // CTEST_TEST_SUIT_ADD_TEST(suit, test_mem_block_reset);
-    // CTEST_TEST_SUIT_ADD_TEST(suit, test_mem_block_trim);
+    // CTEST_ADD_TEST(suit, test_mem_block_create);
+    // CTEST_ADD_TEST(suit, test_mem_block_init);
+    // CTEST_ADD_TEST(suit, test_mem_block_append);
+    // CTEST_ADD_TEST(suit, test_mem_block_sprintf);
+    // CTEST_ADD_TEST(suit, test_mem_block_delete);
+    // CTEST_ADD_TEST(suit, test_mem_block_reset);
+    // CTEST_ADD_TEST(suit, test_mem_block_trim);
 
-    CTEST_TEST_SUIT_ADD_TEST(suit, test_log);
-    CTEST_TEST_SUIT_ADD_BENCHMARK(suit, benchmark_sleep);
+    CTEST_ADD_TEST(suit, test_log);
+    CTEST_ADD_BENCHMARK(suit, benchmark_sleep);
 
     ctest_options options = {0};
     options.verbose = true;

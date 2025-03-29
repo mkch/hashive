@@ -60,7 +60,7 @@ typedef struct ctest_output_encoder {
      *
      * Argument failed indicates whether the test has failed.
      */
-    void (*on_test_end)(ctest_printer print, void* printer_cookie, const char* name, void* test_cookie, size_t count, size_t index, bool failed);
+    void (*on_test_end)(ctest_printer print, void* printer_cookie, const char* name, void* test_cookie, size_t count, size_t index, bool failed, int64_t duration);
     /**
      * Called when the running test logs a message.
      * Argument file and line is the source code file location where the logging occurs.
@@ -95,7 +95,7 @@ typedef struct ctest_output_encoder {
      * Called after running a benchmark.
      *
      */
-    void (*on_benchmark_end)(ctest_printer print, void* printer_cookie, const char* name, void* benchmark_cookie, ctest_benchmark_data* data, size_t count, size_t index, bool failed);
+    void (*on_benchmark_end)(ctest_printer print, void* printer_cookie, const char* name, void* benchmark_cookie, ctest_benchmark_data* data, size_t count, size_t index, bool failed, int64_t duration);
     /**
      * Called when the running benchmark logs a message.
      * Argument file and line is the source code file location where the logging occurs.
@@ -192,19 +192,24 @@ void ctest_test_base_fail(ctest_test_base* base, ctest_options* options);
     }
 
 /**
- * Calls ctest_test_suit_add with the stringified f as test name.
+ * Add a test function f to the test suit.
  */
-#define CTEST_TEST_SUIT_ADD_TEST(suit, f) ctest_test_suit_add_test(suit, #f, f)
+#define CTEST_ADD_TEST(suit, f) ctest_test_suit_add_test(suit, #f, f)
 
 /**
  * Declares a testing function.
  *
- * CTEST_BENCHMARK_FUNC(benchmark_func1) {
- *    // Test code here.
+ * CTEST_BENCHMARK_FUNC(benchmark_sleep) {
+ *   while (CTEST_LOOP) {
+ *       // Benchmark code here.
+ *   }
  * }
  */
 #define CTEST_BENCHMARK_FUNC(NAME) void NAME(ctest_test_base* base_, ctest_options* options_, ctest_benchmark_loop_func loop_, ctest_benchmark_loop_args* args_)
 #define CTEST_LOOP (loop_(args_))
-#define CTEST_TEST_SUIT_ADD_BENCHMARK(suit, f) ctest_test_suit_add_benchmark(suit, #f, f)
+/**
+ * Add a benchmark function f to the test suit.
+ */
+#define CTEST_ADD_BENCHMARK(suit, f) ctest_test_suit_add_benchmark(suit, #f, f)
 
 #endif
