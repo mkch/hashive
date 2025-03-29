@@ -19,20 +19,32 @@ typedef struct ctest_output_encoder {
      * Called before running a test suit.
      *
      * Argument name is the name of current test suit.
+     *
+     * Returns a cookie which will be passed to on_test_suit_end.
+     */
+    void* (*on_setup_test_suit)(ctest_printer print, void* printer_cookie, const char* name);
+    /**
+     * Called after running a test suit.
+     */
+    void (*on_teardown_test_suit)(ctest_printer print, void* printer_cookie, const char* name, void* cookie, size_t failed_count, int64_t duration);
+
+    /**
+     * Called before running tests.
+     *
      * Argument test_count is the count of tests in this test suit.
      *
      * Returns a cookie which will be passed to on_test_suit_end.
      */
-    void* (*on_test_suit_begin)(ctest_printer print, void* printer_cookie, const char* name, size_t test_count);
+    void* (*on_setup_tests)(ctest_printer print, void* printer_cookie, size_t test_count);
     /**
-     * Called after running a test suit.
+     * Called after running all tests.
      *
      * Argument failed_count is the count of failed tests. 0 if all tests passed.
      * Argument duration is the execution time of this test suit.
-     * Argument suit_cookie is the cookie returned by on_test_suit_begin.
+     * Argument suit_cookie is the cookie returned by on_setup_tests.
      *
      */
-    void (*on_test_suit_end)(ctest_printer print, void* printer_cookie, const char* name, void* suit_cookie, size_t test_count, size_t failed_count, int64_t duration);
+    void (*on_teardown_tests)(ctest_printer print, void* printer_cookie, void* cookie, size_t test_count);
     /**
      * Called before running a test.
      *
@@ -61,7 +73,7 @@ typedef struct ctest_output_encoder {
      *
      * Returns a cookie which will be passed to on_teardown_benchmarks.
      */
-    void* (*on_prepare_benchmarks)(ctest_printer print, void* printer_cookie, size_t benchmark_count);
+    void* (*on_setup_benchmarks)(ctest_printer print, void* printer_cookie, size_t benchmark_count);
     /**
      * Called after running all the benchmarks.
      *
@@ -83,7 +95,7 @@ typedef struct ctest_output_encoder {
      * Called after running a benchmark.
      *
      */
-    void (*on_benchmark_end)(ctest_printer print, void* printer_cookie, const char* name, void* benchmark_cookie, ctest_benchmark_data* data, size_t count, size_t index);
+    void (*on_benchmark_end)(ctest_printer print, void* printer_cookie, const char* name, void* benchmark_cookie, ctest_benchmark_data* data, size_t count, size_t index, bool failed);
     /**
      * Called when the running benchmark logs a message.
      * Argument file and line is the source code file location where the logging occurs.
