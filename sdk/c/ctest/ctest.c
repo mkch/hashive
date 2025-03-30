@@ -224,6 +224,37 @@ void lkdbg_report() {
 
 #endif
 
+////////// OS & CPU //////////
+#if defined(_WIN32) || defined(_WIN64)
+
+static char* get_os_name(char* buf, size_t buf_len) {
+}
+
+static char* get_cpu_brand_string(char* buf, size_t buf_len) {
+}
+
+#else
+
+#include <sys/sysctl.h>
+
+static char* get_cpu_brand_string(char* buf, size_t buf_len) {
+    if (sysctlbyname("machdep.cpu.brand_string", buf, &buf_len, NULL, 0) != 0)
+        ERROR_ABORT_MSG("sysctlbyname");
+    return buf;
+}
+
+#include <sys/utsname.h>
+
+static char* get_os_name(char* buf, size_t buf_len) {
+    struct utsname sys_info;
+    if (uname(&sys_info) != 0)
+        ERROR_ABORT_MSG("uname");
+    strncpy(buf, sys_info.sysname, buf_len);
+    return buf;
+}
+
+#endif
+
 ////////// mem_block //////////
 
 typedef struct mem_block {
@@ -428,7 +459,7 @@ typedef LARGE_INTEGER time_spec;
 // initialization, and the result can be cached.
 static LARGE_INTEGER performance_freq = {0};
 
-void get_time(time_spec* t) {
+static void get_time(time_spec* t) {
     if (performance_freq.QuadPart == 0) {
         if (!QueryPerformanceFrequency(&performance_freq)) {
             char msg_buf[64] = {0};
@@ -447,7 +478,7 @@ void get_time(time_spec* t) {
 /**
  * Calculates the duration of t1 - t2, in nanoseconds.
  */
-int64_t time_sub_nsec(time_spec* t1, time_spec* t2) {
+static int64_t time_sub_nsec(time_spec* t1, time_spec* t2) {
     return (t1->QuadPart - t2->QuadPart) * 1000000000 / performance_freq.QuadPart;
 }
 
@@ -456,7 +487,7 @@ int64_t time_sub_nsec(time_spec* t1, time_spec* t2) {
 #include <time.h>
 typedef struct timespec time_spec;
 
-void get_time(time_spec* t) {
+static void get_time(time_spec* t) {
     if (clock_gettime(CLOCK_MONOTONIC, t) != 0) {
         ERROR_ABORT_MSG(strerror(errno));
     }
@@ -465,7 +496,7 @@ void get_time(time_spec* t) {
 /**
  * Calculates the duration of t1 - t2, in nanoseconds.
  */
-int64_t time_sub_nsec(time_spec* t1, time_spec* t2) {
+static int64_t time_sub_nsec(time_spec* t1, time_spec* t2) {
     int64_t result = 0;
     if ((t1->tv_nsec - t2->tv_nsec) < 0) {
         result = ((int64_t)(t1->tv_sec) - 1 - (t2->tv_sec)) * 1000000000;
@@ -486,7 +517,7 @@ typedef struct time_str {
 /**
  * Format nanoseconds duration d.
  */
-time_str time_format_nsec(int64_t d) {
+static time_str time_format_nsec(int64_t d) {
     time_str str;
     if (d < 1000) {  // 1000ns
         snprintf(str.number, sizeof(str.number) / sizeof(str.number[0]), "%" PRId64, d);
@@ -520,14 +551,28 @@ static void text_encoder_on_teardown_test_suit(ctest_printer print, void* printe
     print(printer_cookie, "%s\t%s %s%s\n", failed_count > 0 ? "FAIL" : "PASS", name, duration_str.number, duration_str.unit);
 }
 
+typedef struct text_encoder_cookie {
+    bool has_log_message;
+} text_encoder_cookie;
+
+text_encoder_cookie* text_encoder_cookie_create() {
+    text_encoder_cookie* cookie = malloc(sizeof(text_encoder_cookie));
+    memset(cookie, 0, sizeof(text_encoder_cookie));
+    return cookie;
+}
+
+void text_encoder_cookie_free(text_encoder_cookie* cookie) {
+    free(cookie);
+}
+
 static void* text_encoder_on_test_begin(ctest_printer print, void* printer_cookie,
                                         const char* name, size_t count, size_t index) {
     print(printer_cookie, "    === RUN   %s\n", name);
-    return NULL;
+    return text_encoder_cookie_create();
 }
 
 static void text_encoder_on_test_end(ctest_printer print, void* printer_cookie,
-                                     const char* name, void* test_cookie,
+                                     const char* name, void* cookie,
                                      size_t count, size_t index,
                                      bool failed, int64_t duration) {
     time_str d_str = time_format_nsec(duration);
@@ -536,34 +581,60 @@ static void text_encoder_on_test_end(ctest_printer print, void* printer_cookie,
     } else {
         print(printer_cookie, "    --- PASS: %s (%s%s)\n", name, d_str.number, d_str.unit);
     }
+    text_encoder_cookie_free(cookie);
 }
 
-static void text_encoder_on_log_message(ctest_printer print, void* printer_cookie,
-                                        const char* test_name, void* test_cookie,
-                                        const char* file, int line, const char* message) {
+static void text_encoder_on_test_log_message(ctest_printer print, void* printer_cookie,
+                                             const char* test_name, void* cookie,
+                                             const char* file, int line, const char* message) {
     size_t msg_len = strlen(message);
     print(printer_cookie, "        %s:%d: %s%s",
           file, line,
           message, msg_len > 0 && message[msg_len - 1] == '\n' ? "" : "\n");
+    ((text_encoder_cookie*)cookie)->has_log_message = true;
+}
+
+static void* text_encoder_on_setup_benchmarks(ctest_printer print, void* printer_cookie, size_t benchmark_count) {
+    char os[512] = {0};
+    char cpu[512] = {0};
+    print(printer_cookie, "    OS: %s\n    CPU: %s\n",
+          get_os_name(os, sizeof(os) / sizeof(os[0])),
+          get_cpu_brand_string(cpu, sizeof(cpu) / sizeof(cpu[0])));
+}
+
+static void* text_encoder_on_benchmark_begin(ctest_printer print, void* printer_cookie, const char* name, size_t benchmark_count, size_t index) {
+    return text_encoder_cookie_create();
 }
 
 static void text_encoder_on_benchmark_end(ctest_printer print, void* printer_cookie,
-                                          const char* name, void* benchmark_cookie,
+                                          const char* name, void* cookie,
                                           ctest_benchmark_data* data,
                                           size_t count, size_t index,
                                           bool failed, int64_t duration) {
     if (data->op == 0) {
-        fprintf(stderr, "CTEST_LOOP is not used in benchmark function '%s'\n", name);
+        fprintf(stderr, "    CTEST_LOOP is not used in benchmark function '%s'\n", name);
+        text_encoder_cookie_free(cookie);
         abort();
         return;
     }
     if (failed) {
         time_str d_str = time_format_nsec(duration);
         print(printer_cookie, "    --- FAIL: %s (%s%s)\n", name, d_str.number, d_str.unit);
+        text_encoder_cookie_free(cookie);
         return;
     }
     time_str duration_str = time_format_nsec(data->ns / data->op);
-    print(printer_cookie, "%s\t\t%" PRId64 "\t\t%s %s/op\n", name, data->op, duration_str.number, duration_str.unit);
+    print(printer_cookie, "    %s\t%" PRId64 "\t%s %s/op\n", name, data->op, duration_str.number, duration_str.unit);
+    text_encoder_cookie_free(cookie);
+}
+
+static void text_encoder_on_benchmark_log_message(ctest_printer print, void* printer_cookie,
+                                                  const char* name, void* cookie,
+                                                  const char* file, int line, const char* message) {
+    if (!((text_encoder_cookie*)cookie)->has_log_message) {
+        print(printer_cookie, "    %s\n", name);
+    }
+    text_encoder_on_test_log_message(print, printer_cookie, name, cookie, file, line, message);
 }
 
 ctest_options* ctest_options_set_text_encoder(ctest_options* options) {
@@ -573,12 +644,12 @@ ctest_options* ctest_options_set_text_encoder(ctest_options* options) {
     options->encoder.on_teardown_tests = NULL;
     options->encoder.on_test_begin = text_encoder_on_test_begin;
     options->encoder.on_test_end = text_encoder_on_test_end;
-    options->encoder.on_test_log_message = text_encoder_on_log_message;
-    options->encoder.on_setup_benchmarks = NULL;
+    options->encoder.on_test_log_message = text_encoder_on_test_log_message;
+    options->encoder.on_setup_benchmarks = text_encoder_on_setup_benchmarks;
     options->encoder.on_teardown_benchmarks = NULL;
-    options->encoder.on_benchmark_begin = NULL;
+    options->encoder.on_benchmark_begin = text_encoder_on_benchmark_begin;
     options->encoder.on_benchmark_end = text_encoder_on_benchmark_end;
-    options->encoder.on_benchmark_log_message = text_encoder_on_log_message;
+    options->encoder.on_benchmark_log_message = text_encoder_on_benchmark_log_message;
     return options;
 }
 
@@ -691,15 +762,22 @@ static void json_encoder_on_log_message(ctest_printer print, void* printer_cooki
 }
 
 static void* json_encoder_on_setup_benchmarks(ctest_printer print, void* printer_cookie, size_t benchmark_count) {
+    char buf[512] = {0};
+    const size_t buf_size = sizeof(buf) / sizeof(buf[0]);
     mem_block escape_buf;
     mem_block_init(&escape_buf);
-    print(printer_cookie, ",\"benchmarks\":[");
+    escape_json_string(&escape_buf, get_os_name(buf, buf_size));
+    char* os = mem_block_dup(&escape_buf);
+    mem_block_reset(&escape_buf);
+    print(printer_cookie, ",\"benchmarks\":{\"OS\":\"%s\",\"CPU\":\"%s\", \"benchmarks\":[",
+          os, escape_json_string(&escape_buf, get_cpu_brand_string(buf, buf_size)));
+    free(os);
     mem_block_destroy(&escape_buf);
     return NULL;
 }
 
 static void json_encoder_on_teardown_benchmarks(ctest_printer print, void* printer_cookie, void* cookie, size_t benchmark_count) {
-    print(printer_cookie, "]");
+    print(printer_cookie, "]}");
 }
 
 static void* json_encoder_on_benchmark_begin(ctest_printer print, void* printer_cookie,
@@ -825,7 +903,7 @@ typedef struct ctest_test_base {
     void* cookie;
     mem_block log_messages;
     bool failed;
-    bool show_log;  // always show log.
+    bool benchmark;  // is benchmark.
 } ctest_test_base;
 
 static void ctest_test_base_init(ctest_test_base* base, const char* name) {
@@ -848,10 +926,10 @@ void ctest_test_base_log(ctest_test_base* base, ctest_options* options, const ch
     mem_block_init(&mem);
     mem_block_append_vsprintf(&mem, true, format, args);
     char* message = mem_block_detach(&mem);
-    if (base->show_log || options->verbose || base->failed) {
-        options->encoder.on_test_log_message(options->printer, options->printer_cookie,
-                                             base->name, base->cookie,
-                                             file, line, message);
+    if (base->benchmark || options->verbose || base->failed) {
+        (base->benchmark ? options->encoder.on_benchmark_log_message : options->encoder.on_test_log_message)(options->printer, options->printer_cookie,
+                                                                                                             base->name, base->cookie,
+                                                                                                             file, line, message);
         free(message);
     } else {
         // save it.
@@ -900,7 +978,7 @@ typedef struct ctest_benchmark {
 static ctest_benchmark* ctest_benchmark_create(const char* name, ctest_benchmark_func f) {
     ctest_benchmark* bench = calloc(1, sizeof(ctest_benchmark));
     ctest_test_base_init(&bench->base, name);
-    bench->base.show_log = true;  // benchmarks always show log.
+    bench->base.benchmark = true;  // benchmarks always show log.
     bench->f = f;
     return bench;
 }
