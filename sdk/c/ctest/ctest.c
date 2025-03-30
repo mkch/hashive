@@ -227,10 +227,26 @@ void lkdbg_report() {
 ////////// OS & CPU //////////
 #if defined(_WIN32) || defined(_WIN64)
 
+#include <intrin.h>
+
 static char* get_os_name(char* buf, size_t buf_len) {
+    return strncpy(buf, "Windows", buf_len);
 }
 
 static char* get_cpu_brand_string(char* buf, size_t buf_len) {
+    if(buf_len < 49)
+        ERROR_ABORT_MSG("buf_len < 49");
+    memset(buf, 0, 49);
+
+    int regs[4];
+    __cpuid(regs, 0x80000002);
+    memcpy(buf, regs, sizeof(regs));
+    __cpuid(regs, 0x80000003);
+    memcpy(buf + 16, regs, sizeof(regs));
+    __cpuid(regs, 0x80000004);
+    memcpy(buf + 32, regs, sizeof(regs));
+
+    return buf;
 }
 
 #else
@@ -464,14 +480,14 @@ static void get_time(time_spec* t) {
         if (!QueryPerformanceFrequency(&performance_freq)) {
             char msg_buf[64] = {0};
             snprintf(msg_buf, sizeof(msg_buf) / sizeof(msg_buf[0]), "Last Error=0x%lx", GetLastError());
-            ERROR_ABORT_MSG("QueryPerformanceFrequency", msg_buf);
+            ERROR_ABORT_MSG("QueryPerformanceFrequency");
         }
     }
 
     if (!QueryPerformanceCounter(t)) {
         char msg_buf[64] = {0};
         snprintf(msg_buf, sizeof(msg_buf) / sizeof(msg_buf[0]), "Last Error=0x%lx", GetLastError());
-        ERROR_ABORT_MSG("QueryPerformanceFrequency", msg_buf);
+        ERROR_ABORT_MSG("QueryPerformanceFrequency");
     }
 }
 
