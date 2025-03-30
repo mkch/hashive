@@ -1,4 +1,4 @@
-CFLAGS = -Werror -DTEST_CTEST
+CFLAGS = -Werror -DTEST_CTEST -g
 CFLAGS_ASAN = $(CFLAGS) -fsanitize=address,leak,undefined
 CFLAGS_LKDBG = $(CFLAGS) -DENABLE_LKDBG
 CFLAGS_LKDBG_ASAN = $(CFLAGS) -DENABLE_LKDBG -fsanitize=address,leak,undefined
