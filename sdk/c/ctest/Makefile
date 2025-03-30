@@ -53,6 +53,10 @@ $(TARGET_LKDBG_ASAN): $(SOURCES)
 
 clean:
 	rm -f $(TARGET)
+	rm -rf $(TARGET).dSYM
 	rm -f $(TARGET_ASAN)
+	rm -rf $(TARGET_ASAN).dSYM
 	rm -f $(TARGET_LKDBG)
+	rm -rf $(TARGET_LKDBG).dSYM
 	rm -f $(TARGET_LKDBG_ASAN)
+	rm -rf $(TARGET_LKDBG_ASAN).dSYM
