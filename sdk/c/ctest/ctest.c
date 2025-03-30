@@ -234,7 +234,7 @@ static char* get_os_name(char* buf, size_t buf_len) {
 }
 
 static char* get_cpu_brand_string(char* buf, size_t buf_len) {
-    if(buf_len < 49)
+    if (buf_len < 49)
         ERROR_ABORT_MSG("buf_len < 49");
     memset(buf, 0, 49);
 
