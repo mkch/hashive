@@ -1,4 +1,4 @@
-CFLAGS = -Werror -DTEST_CTEST -g
+CFLAGS = -Wall -Werror -DTEST_CTEST -g
 CFLAGS_ASAN = $(CFLAGS) -fsanitize=address,leak,undefined
 CFLAGS_LKDBG = $(CFLAGS) -DENABLE_LKDBG
 CFLAGS_LKDBG_ASAN = $(CFLAGS) -DENABLE_LKDBG -fsanitize=address,leak,undefined
@@ -20,6 +20,8 @@ TARGET_LKDBG_ASAN = $(TARGET_BASE)_lkdbg_asan$(EXE_SUFFIX)
 $(info $(TARGET_LKDBG_ASAN))
 
 SOURCES := ctest.c
+
+all: test test_asan test_lkdbg test_lkdbg_asan
 
 # test ctest
 test: $(TARGET)

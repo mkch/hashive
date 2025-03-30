@@ -40,7 +40,7 @@ void lkdbg_alloc_records_dump(lkdbg_alloc_records* records) {
     printf("[ALLOC RECORDS] %d ", (int)records->len);
     for (size_t i = 0; i < records->len; i++) {
         lkdbg_alloc_record* r = &records->records[i];
-        printf("%d:{%s:%d %p %" PRId64 "}, ", (int)i, r->file, r->line, r->p, r->size);
+        printf("%d:{%s:%d %p %zu}, ", (int)i, r->file, r->line, r->p, r->size);
     }
     printf("\n");
 }
@@ -110,7 +110,7 @@ void* lkdbg_malloc(size_t n, const char* file, int line) {
         lkdbg_alloc_records_insert(&lkdbg_records, p, n, file, line);
     }
 #ifdef DEBUG_LKDBG
-    printf("lkdbg_malloc %" PRId64 " %p\n", n, p);
+    printf("lkdbg_malloc %zu %p\n", n, p);
     lkdbg_alloc_records_dump(&lkdbg_records);
 #endif
     return p;
@@ -122,7 +122,7 @@ void* lkdbg_calloc(size_t count, size_t size, const char* file, int line) {
         lkdbg_alloc_records_insert(&lkdbg_records, p, size, file, line);
     }
 #ifdef DEBUG_LKDBG
-    printf("lkdbg_calloc %" PRId64 " %" PRId64 " %p\n", count, size, p);
+    printf("lkdbg_calloc %" PRId64 " %zu %p\n", count, size, p);
     lkdbg_alloc_records_dump(&lkdbg_records);
 #endif
     return p;
@@ -153,27 +153,26 @@ void* lkdbg_realloc(void* p, size_t size, const char* file, int line) {
         lkdbg_alloc_records_insert(&lkdbg_records, p2, size, file, line);
     }
 #ifdef DEBUG_LKDBG
-    printf("lkdbg_realloc %p %" PRId64 " %p\n", p, (int)size, p2);
+    printf("lkdbg_realloc %p %zu %p\n", p, (int)size, p2);
     lkdbg_alloc_records_dump(&lkdbg_records);
 #endif
     return p2;
 }
 
 void lkdbg_free(void* p, const char* file, int line) {
-    free(p);
-    if (!p) {
-        return;
-    }
-    int i = lkdbg_alloc_records_find(&lkdbg_records, p);
-    if (i < 0) {
-        fprintf(stderr, "[LKDBG] %s:%d `free` an invalid pointer %p\n", file, line, p);
-    } else {
-        lkdbg_alloc_records_delete(&lkdbg_records, i);
-    }
+    if (p) {
+        int i = lkdbg_alloc_records_find(&lkdbg_records, p);
+        if (i < 0) {
+            fprintf(stderr, "[LKDBG] %s:%d `free` an invalid pointer %p\n", file, line, p);
+        } else {
+            lkdbg_alloc_records_delete(&lkdbg_records, i);
+        }
 #ifdef DEBUG_LKDBG
-    printf("lkdbg_free %p\n", p);
-    lkdbg_alloc_records_dump(&lkdbg_records);
+        printf("lkdbg_free %p\n", p);
+        lkdbg_alloc_records_dump(&lkdbg_records);
 #endif
+    }
+    free(p);
 }
 
 void lkdbg_report() {
@@ -182,7 +181,7 @@ void lkdbg_report() {
     }
     for (size_t i = 0; i < lkdbg_records.len; i++) {
         lkdbg_alloc_record* record = &lkdbg_records.records[i];
-        fprintf(stderr, "[LKDBG] memory leak: %p size %" PRId64 " at %s:%d\n", record->p, record->size, record->file, record->line);
+        fprintf(stderr, "[LKDBG] memory leak: %p size %zu at %s:%d\n", record->p, record->size, record->file, record->line);
     }
     lkdbg_alloc_records_destroy(&lkdbg_records);
 }
@@ -413,7 +412,8 @@ mem_block* mem_block_delete(mem_block* mem, size_t start, int len) {
 /**
  * Append a value of specified type to the end of mem.
  */
-#define mem_block_append_t(mem, type, value) (*(type*)(mem_block_expand((mem), sizeof(type))) = value, (mem))
+#define mem_block_expand_t(mem, type) (*(type*)mem_block_expand((mem), sizeof(type)))
+#define mem_block_append_t(mem, type, value) ((*(type*)(mem_block_expand((mem), sizeof(type))) = (value)), (mem))
 
 /**
  * See mem_block_append_sprintf for details.
@@ -536,7 +536,7 @@ typedef struct time_str {
 static time_str time_format_nsec(int64_t d) {
     time_str str;
     if (d < 1000) {  // 1000ns
-        snprintf(str.number, sizeof(str.number) / sizeof(str.number[0]), "%" PRId64, d);
+        snprintf(str.number, sizeof(str.number) / sizeof(str.number[0]), "%u", (uint16_t)d);
         str.unit = "ns";
     } else if (d < 100000000) {  // 0.1s
         snprintf(str.number, sizeof(str.number) / sizeof(str.number[0]), "%0.3f", (double)d / 1000000);
@@ -616,6 +616,7 @@ static void* text_encoder_on_setup_benchmarks(ctest_printer print, void* printer
     print(printer_cookie, "    OS: %s\n    CPU: %s\n",
           get_os_name(os, sizeof(os) / sizeof(os[0])),
           get_cpu_brand_string(cpu, sizeof(cpu) / sizeof(cpu[0])));
+    return NULL;
 }
 
 static void* text_encoder_on_benchmark_begin(ctest_printer print, void* printer_cookie, const char* name, size_t benchmark_count, size_t index) {
@@ -697,7 +698,7 @@ static char* escape_json_string(mem_block* mem, const char* str) {
                 mem_block_append(mem, "\\r", 2);
                 break;
             default:
-                mem_block_append_t(mem, char, *p);
+                mem_block_expand_t(mem, char) = *p;
         }
     }
     return mem_block_append_t(mem, char, 0)->data;  // add terminating zero.
@@ -1042,7 +1043,7 @@ void ctest_test_suit_add_test(ctest_test_suit* suit, char* name, ctest_test_func
     if (!test)
         ERROR_ABORT_MSG("ctest_test_create");
 
-    mem_block_append_t(&suit->tests, ctest_test*, test);
+    mem_block_expand_t(&suit->tests, ctest_test*) = test;
 }
 
 void ctest_test_suit_add_benchmark(ctest_test_suit* suit, char* name, ctest_benchmark_func f) {
@@ -1053,7 +1054,7 @@ void ctest_test_suit_add_benchmark(ctest_test_suit* suit, char* name, ctest_benc
     if (!bench)
         ERROR_ABORT_MSG("ctest_benchmark_create");
 
-    mem_block_append_t(&suit->benchmarks, ctest_benchmark*, bench);
+    mem_block_expand_t(&suit->benchmarks, ctest_benchmark*) = bench;
 }
 
 static void ensure_printer(ctest_options* options) {
@@ -1194,7 +1195,6 @@ static size_t ctest_test_suit_run_benchmarks(ctest_test_suit* suit, ctest_option
 bool ctest_test_suit_run(ctest_test_suit* suit, ctest_options* options) {
     ensure_printer(options);
 
-    const size_t test_count = mem_block_array_size_t(&suit->tests, ctest_benchmark*);
     if (options->encoder.on_setup_test_suit) {
         suit->cookie = options->encoder.on_setup_test_suit(options->printer, options->printer_cookie,
                                                            suit->name);
@@ -1272,7 +1272,7 @@ CTEST_TEST_FUNC(test_mem_block_append) {
 
 CTEST_TEST_FUNC(test_mem_block_sprintf) {
     mem_block* mem = mem_block_create();
-    mem_block_append_t(mem, char, '-');
+    mem_block_expand_t(mem, char) = '-';
     mem_block_append_sprintf(mem, false, "%s%d", "abc", 123);
 
     size_t len = mem_block_len(mem);
@@ -1284,8 +1284,7 @@ CTEST_TEST_FUNC(test_mem_block_sprintf) {
     if (cap != 16) {
         CTEST_FAILF("want %d, got %d", 16, cap);
     }
-    mem_block_append_t(mem, char, 0);  // makes it zero-terminated.
-    const char* str = mem_block_data(mem);
+    const char* str = mem_block_data(mem_block_append_t(mem, char, '0'));
     if (strcmp(str, "-abc123") != 0) {
         CTEST_FAILF("want %s, got %s", "-abc123", str);
     }
