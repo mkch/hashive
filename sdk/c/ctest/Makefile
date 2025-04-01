@@ -55,5 +55,4 @@ $(TARGET_LKDBG_ASAN): $(SOURCE_DEP)
 	$(CC) $(CFLAGS_LKDBG_ASAN) -o $(TARGET_LKDBG_ASAN) $(SOURCES)
 
 clean:
-	echo 5
 	rm -rf $(TEMP_DIR)
