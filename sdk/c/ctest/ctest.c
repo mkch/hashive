@@ -1,3 +1,5 @@
+#define _GNU_SOURCE  // for 'dladdr'
+
 #include "ctest.h"
 
 #include <assert.h>
@@ -193,6 +195,147 @@ void lkdbg_report() {
 
 #endif
 
+////////// get_section //////////
+#ifdef _WIN32
+
+#include <stdio.h>
+#include <windows.h>
+
+void* get_section(const char*, const char* sectname, size_t* out_sec_len) {
+    HMODULE hModule = GetModuleHandle(NULL);
+    if (hModule == NULL) {
+        return NULL;
+    }
+
+    PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hModule;
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) {
+        return NULL;
+    }
+
+    PIMAGE_NT_HEADERS pNtHeaders = (PIMAGE_NT_HEADERS)((BYTE*)hModule + pDosHeader->e_lfanew);
+    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE) {
+        return NULL;
+    }
+
+    PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+    for (WORD i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++) {
+        if (strncmp((const char*)pSectionHeader[i].Name, sectname, 8) == 0) {
+            if (out_sec_len) {
+                *out_sec_len = pSectionHeader[i].Misc.VirtualSize;
+            }
+            return (void*)((BYTE*)hModule + pSectionHeader[i].VirtualAddress);
+        }
+    }
+
+    return NULL;
+}
+
+#elif __APPLE__
+
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
+
+void* get_section(const char* segname, const char* sectname, size_t* out_len) {
+    Dl_info info;
+    if (!dladdr((void*)get_section, &info)) {
+        return NULL;
+    }
+
+    intptr_t slide = _dyld_get_image_vmaddr_slide(0);
+
+    const struct mach_header* header = (const struct mach_header*)info.dli_fbase;
+    struct load_command* lc = (struct load_command*)((uintptr_t)header + sizeof(struct mach_header_64));
+
+    for (uint32_t i = 0; i < header->ncmds; i++) {
+        if (lc->cmd == LC_SEGMENT_64) {
+            struct segment_command_64* seg = (struct segment_command_64*)lc;
+            if (strcmp(seg->segname, segname) == 0) {
+                struct section_64* sect = (struct section_64*)(seg + 1);
+                for (uint32_t j = 0; j < seg->nsects; j++) {
+                    if (strcmp(sect[j].sectname, sectname) == 0) {
+                        if (out_len) *out_len = sect[j].size;
+                        return (void*)((uintptr_t)sect[j].addr + slide);
+                    }
+                }
+            }
+        }
+        lc = (struct load_command*)((uintptr_t)lc + lc->cmdsize);
+    }
+    return NULL;
+}
+
+#else
+
+#include <dlfcn.h>
+#include <elf.h>
+#include <fcntl.h>
+#include <link.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+void* get_section(const char* unused, const char* sectname, size_t* out_len) {
+    Dl_info info;
+    if (!dladdr(get_section, &info)) {
+        return NULL;
+    }
+
+    int fd = open(info.dli_fname, O_RDONLY);
+    if (fd == -1) {
+        return NULL;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) == -1) {
+        close(fd);
+        return NULL;
+    }
+
+    void* map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (map == MAP_FAILED) {
+        close(fd);
+        return NULL;
+    }
+
+    // ELF Header
+    // Do not use (ElfW(Ehdr) *)info.dli_fbase,
+    // whose string table may be empty.
+    ElfW(Ehdr)* ehdr = (ElfW(Ehdr)*)map;
+
+    if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0) {
+        munmap(map, st.st_size);
+        close(fd);
+        return NULL;
+    }
+
+    // Section header table
+    ElfW(Shdr)* shdr = (ElfW(Shdr)*)((char*)map + ehdr->e_shoff);
+
+    // String table
+    ElfW(Shdr)* sh_strtab = &shdr[ehdr->e_shstrndx];
+    const char* sh_strtab_p = (char*)map + sh_strtab->sh_offset;
+
+    for (int i = 0; i < ehdr->e_shnum; i++) {
+        const char* name = sh_strtab_p + shdr[i].sh_name;
+        if (strcmp(name, sectname) == 0) {
+            // Found
+            void* addr = (void*)((uintptr_t)info.dli_fbase + shdr[i].sh_addr);
+            *out_len = shdr[i].sh_size;
+
+            munmap(map, st.st_size);
+            close(fd);
+            return addr;
+        }
+    }
+
+    // Not found
+    munmap(map, st.st_size);
+    close(fd);
+    return NULL;
+}
+
+#endif  // _WIN32
+
 #ifdef NDEBUG
 
 #define ERROR_ABORT_MSG(func, msg)                               \
@@ -224,8 +367,7 @@ void lkdbg_report() {
 #endif
 
 ////////// OS & CPU //////////
-#if defined(_WIN32) || defined(_WIN64)
-
+#ifdef _WIN32
 #include <intrin.h>
 
 static char* get_os_name(char* buf, size_t buf_len) {
@@ -248,7 +390,48 @@ static char* get_cpu_brand_string(char* buf, size_t buf_len) {
     return buf;
 }
 
-#else
+#else  // _WIN32
+
+#ifdef __linux__
+
+static char* get_cpu_brand_string(char* buf, size_t buf_len) {
+    FILE* cpuinfo = NULL;
+    char line[256];  // 用于读取 /proc/cpuinfo 的每一行
+    const char* target_field = "model name";
+    char* model_name_ptr = NULL;
+    size_t model_name_len = 0;
+
+    cpuinfo = fopen("/proc/cpuinfo", "r");
+    if (cpuinfo == NULL) {
+        return NULL;
+    }
+
+    while (fgets(line, sizeof(line), cpuinfo) != NULL) {
+        if (strncmp(line, target_field, strlen(target_field)) == 0) {
+            char* colon_ptr = strchr(line, ':');
+            if (colon_ptr != NULL) {
+                model_name_ptr = colon_ptr + 1;
+                while (*model_name_ptr && (*model_name_ptr == ' ' || *model_name_ptr == '\t')) {
+                    model_name_ptr++;
+                }
+                model_name_len = strlen(model_name_ptr);
+                if (model_name_len > 0 && model_name_ptr[model_name_len - 1] == '\n') {
+                    model_name_ptr[model_name_len - 1] = '\0';
+                    model_name_len--;  // 更新长度
+                }
+
+                strncpy(buf, model_name_ptr, buf_len);
+                fclose(cpuinfo);
+                return buf;
+            }
+        }
+    }
+
+    fclose(cpuinfo);
+    return NULL;
+}
+
+#else  // __linux__
 
 #include <sys/sysctl.h>
 
@@ -257,6 +440,8 @@ static char* get_cpu_brand_string(char* buf, size_t buf_len) {
         ERROR_ABORT_MSG("sysctlbyname");
     return buf;
 }
+
+#endif  // __linux__
 
 #include <sys/utsname.h>
 
@@ -268,7 +453,7 @@ static char* get_os_name(char* buf, size_t buf_len) {
     return buf;
 }
 
-#endif
+#endif  // _WIN32
 
 ////////// mem_block //////////
 
@@ -554,6 +739,23 @@ typedef struct ctest_benchmark_data {
 } ctest_benchmark_data;
 
 ////////// ctest encoders //////////
+
+// Return whether all the members of encoder is NULL.
+// Please snyc with ctest_output_encoder.
+static bool zero_encoder(ctest_output_encoder* encoder) {
+    return !encoder->on_setup_test_suit &&
+           !encoder->on_teardown_test_suit &&
+           !encoder->on_setup_tests &&
+           !encoder->on_teardown_tests &&
+           !encoder->on_test_begin &&
+           !encoder->on_test_end &&
+           !encoder->on_test_log_message &&
+           !encoder->on_setup_benchmarks &&
+           !encoder->on_teardown_benchmarks &&
+           !encoder->on_benchmark_begin &&
+           !encoder->on_benchmark_end &&
+           !encoder->on_benchmark_log_message;
+}
 
 static void* text_encoder_on_setup_test_suit(ctest_printer print, void* printer_cookie, const char* name) {
     print(printer_cookie, "*** %s\n", name);
@@ -1035,7 +1237,7 @@ void ctest_test_suit_free(ctest_test_suit* suit) {
     free(suit);
 }
 
-void ctest_test_suit_add_test(ctest_test_suit* suit, char* name, ctest_test_func f) {
+void ctest_test_suit_add_test(ctest_test_suit* suit, const char* name, ctest_test_func f) {
     if (!f)
         ERROR_ABORT_MSG("NULL test function");
 
@@ -1046,7 +1248,7 @@ void ctest_test_suit_add_test(ctest_test_suit* suit, char* name, ctest_test_func
     mem_block_expand_t(&suit->tests, ctest_test*) = test;
 }
 
-void ctest_test_suit_add_benchmark(ctest_test_suit* suit, char* name, ctest_benchmark_func f) {
+void ctest_test_suit_add_benchmark(ctest_test_suit* suit, const char* name, ctest_benchmark_func f) {
     if (!f)
         ERROR_ABORT_MSG("NULL benchmark function");
 
@@ -1057,10 +1259,13 @@ void ctest_test_suit_add_benchmark(ctest_test_suit* suit, char* name, ctest_benc
     mem_block_expand_t(&suit->benchmarks, ctest_benchmark*) = bench;
 }
 
-static void ensure_printer(ctest_options* options) {
+static void fill_default_options(ctest_options* options) {
     if (!options->printer) {
         options->printer = console_printer;
         options->printer_cookie = NULL;
+    }
+    if (zero_encoder(&options->encoder)) {
+        ctest_options_set_text_encoder(options);
     }
 }
 
@@ -1193,7 +1398,7 @@ static size_t ctest_test_suit_run_benchmarks(ctest_test_suit* suit, ctest_option
 }
 
 bool ctest_test_suit_run(ctest_test_suit* suit, ctest_options* options) {
-    ensure_printer(options);
+    fill_default_options(options);
 
     if (options->encoder.on_setup_test_suit) {
         suit->cookie = options->encoder.on_setup_test_suit(options->printer, options->printer_cookie,
@@ -1219,10 +1424,54 @@ bool ctest_test_suit_run(ctest_test_suit* suit, ctest_options* options) {
     return failure_count == 0;
 }
 
+#ifdef __APPLE__
+#define GET_SECTION(sec, len) get_section("__DATA", sec, len)
+#else
+#define GET_SECTION(sec, len) get_section(NULL, sec, len)
+#endif
+
+int ctest_main(int argc, char* argv[], ctest_options* options) {
+    size_t sec_len = 0;
+    ctest_sec_** secs = GET_SECTION(CTEST_SECTION_, &sec_len);
+    if (!secs) {
+        ERROR_ABORT_MSG("get_section");
+    }
+    if (!sec_len) {
+        return 0;
+    }
+
+    const char* file = __FILE__;
+    const char* sep = strrchr(file, '/');
+    if (sep == NULL) {
+        sep = strrchr(file, '\\');
+    }
+    if (sep) {
+        file = sep + 1;
+    }
+
+    ctest_test_suit* suit = ctest_test_suit_create(file);
+    const size_t count = sec_len / sizeof(ctest_sec_*);
+    for (size_t i = 0; i < count; i++) {
+        ctest_sec_* sec = secs[i];
+        if (sec->t) {
+            ctest_test_suit_add_test(suit, sec->name, sec->t);
+        } else if (sec->b) {
+            ctest_test_suit_add_benchmark(suit, sec->name, sec->b);
+        } else {
+            ERROR_ABORT_MSG("no test or benchmark");
+        }
+    }
+
+    ctest_test_suit_run(suit, options);
+    ctest_test_suit_free(suit);
+
+    return 0;
+}
+
 ////////// Test ctest itself //////////
 #ifdef TEST_CTEST
 
-CTEST_TEST_FUNC(test_mem_block_create) {
+CTEST_TEST(test_mem_block_create) {
     mem_block* mem = mem_block_create();
     uint8_t zero_block[sizeof(mem_block)] = {0};
     if (memcmp(mem, zero_block, sizeof(mem_block)) != 0) {
@@ -1231,7 +1480,7 @@ CTEST_TEST_FUNC(test_mem_block_create) {
     mem_block_free(mem);
 }
 
-CTEST_TEST_FUNC(test_mem_block_init) {
+CTEST_TEST(test_mem_block_init) {
     mem_block mem;
     mem_block_init(&mem);
     uint8_t zero_block[sizeof(mem_block)] = {0};
@@ -1241,7 +1490,7 @@ CTEST_TEST_FUNC(test_mem_block_init) {
     mem_block_destroy(&mem);
 }
 
-CTEST_TEST_FUNC(test_mem_block_append) {
+CTEST_TEST(test_mem_block_append) {
     mem_block* mem = mem_block_create();
     mem_block_append(mem, "abc", 3);
 
@@ -1270,7 +1519,7 @@ CTEST_TEST_FUNC(test_mem_block_append) {
     mem_block_free(mem);
 }
 
-CTEST_TEST_FUNC(test_mem_block_sprintf) {
+CTEST_TEST(test_mem_block_sprintf) {
     mem_block* mem = mem_block_create();
     mem_block_expand_t(mem, char) = '-';
     mem_block_append_sprintf(mem, false, "%s%d", "abc", 123);
@@ -1284,7 +1533,7 @@ CTEST_TEST_FUNC(test_mem_block_sprintf) {
     if (cap != 16) {
         CTEST_FAILF("want %d, got %d", 16, cap);
     }
-    const char* str = mem_block_data(mem_block_append_t(mem, char, '0'));
+    const char* str = mem_block_data(mem_block_append_t(mem, char, '\0'));
     if (strcmp(str, "-abc123") != 0) {
         CTEST_FAILF("want %s, got %s", "-abc123", str);
     }
@@ -1303,7 +1552,7 @@ CTEST_TEST_FUNC(test_mem_block_sprintf) {
     mem_block_free(mem);
 }
 
-CTEST_TEST_FUNC(test_mem_block_delete) {
+CTEST_TEST(test_mem_block_delete) {
     mem_block* mem = mem_block_create();
     mem_block_append(mem, "0123456789", 10);
     mem_block_delete(mem, 8, 2);
@@ -1342,7 +1591,7 @@ CTEST_TEST_FUNC(test_mem_block_delete) {
     mem_block_free(mem);
 }
 
-CTEST_TEST_FUNC(test_mem_block_reset) {
+CTEST_TEST(test_mem_block_reset) {
     mem_block* mem = mem_block_create();
     mem_block_append(mem, "abc", 3);
     size_t old_cap = mem_block_cap(mem);
@@ -1359,7 +1608,7 @@ CTEST_TEST_FUNC(test_mem_block_reset) {
     mem_block_free(mem);
 }
 
-CTEST_TEST_FUNC(test_mem_block_trim) {
+CTEST_TEST(test_mem_block_trim) {
     mem_block* mem = mem_block_create();
     mem_block_append(mem, "abc", 3);
     mem_block_trim(mem);
@@ -1378,7 +1627,7 @@ CTEST_TEST_FUNC(test_mem_block_trim) {
     mem_block_free(mem);
 }
 
-CTEST_TEST_FUNC(test_mem_block_detach) {
+CTEST_TEST(test_mem_block_detach) {
     mem_block* mem = mem_block_create();
     mem_block_append(mem, "abc", 3);
     void* p = mem_block_detach(mem);
@@ -1398,7 +1647,7 @@ CTEST_TEST_FUNC(test_mem_block_detach) {
     mem_block_free(mem);
 }
 
-CTEST_TEST_FUNC(test_log) {
+CTEST_TEST(test_log) {
     CTEST_LOGF("1+1=%d", 1 + 1);
     CTEST_LOGF("line%d: abc\n\tline%d:def\t.", 1, 2);
 }
@@ -1419,40 +1668,25 @@ void sleep_ms(uint32_t ms) {
 }
 #endif
 
-CTEST_BENCHMARK_FUNC(benchmark_sleep) {
+CTEST_BENCHMARK(benchmark_sleep) {
     while (CTEST_LOOP) {
         sleep_ms(10);
     }
-    CTEST_LOGF("fail!");
+    CTEST_LOGF("sleep done");
 }
 
-int main() {
-    ctest_test_suit* suit = ctest_test_suit_create("ctest");
-
-    // CTEST_ADD_TEST(suit, test_mem_block_create);
-    // CTEST_ADD_TEST(suit, test_mem_block_init);
-    // CTEST_ADD_TEST(suit, test_mem_block_append);
-    // CTEST_ADD_TEST(suit, test_mem_block_sprintf);
-    // CTEST_ADD_TEST(suit, test_mem_block_delete);
-    // CTEST_ADD_TEST(suit, test_mem_block_reset);
-    // CTEST_ADD_TEST(suit, test_mem_block_trim);
-
-    CTEST_ADD_TEST(suit, test_log);
-    CTEST_ADD_BENCHMARK(suit, benchmark_sleep);
-
+int main(int argc, char* argv[]) {
     ctest_options options = {0};
     options.verbose = true;
-    ctest_options_set_text_encoder(&options);
-    ctest_test_suit_run(suit, &options);
+
+    ctest_main(argc, argv, &options);
 
     ctest_options_set_json_encoder(&options);
     string_printer* printer = ctest_options_create_string_printer(&options);
-    ctest_test_suit_run(suit, &options);
+    ctest_main(argc, argv, &options);
+    ;
     printf("JSON OUTPUT:\n%s\n", string_printer_str(printer));
-
     string_printer_free(printer);
-
-    ctest_test_suit_free(suit);
 
 #ifdef ENABLE_LKDBG
     lkdbg_report();

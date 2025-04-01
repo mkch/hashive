@@ -138,7 +138,9 @@ typedef void (*ctest_benchmark_func)(ctest_test_base* base, ctest_options* optio
 
 ctest_test_suit* ctest_test_suit_create(const char* name);
 void ctest_test_suit_free(ctest_test_suit* suit);
-void ctest_test_suit_add_test(ctest_test_suit* suit, char* name, ctest_test_func f);
+void ctest_test_suit_add_test(ctest_test_suit* suit, const char* name, ctest_test_func f);
+void ctest_test_suit_add_benchmark(ctest_test_suit* suit, const char* name, ctest_benchmark_func f);
+
 /**
  * Runs all the tests in suit.
  *
@@ -197,9 +199,9 @@ void ctest_test_base_fail(ctest_test_base* base, ctest_options* options);
 #define CTEST_ADD_TEST(suit, f) ctest_test_suit_add_test(suit, #f, f)
 
 /**
- * Declares a testing function.
+ * Define a benchmark function.
  *
- * CTEST_BENCHMARK_FUNC(benchmark_sleep) {
+ * CTEST_BENCHMARK_FUNC(benchmark_name) {
  *   while (CTEST_LOOP) {
  *       // Benchmark code here.
  *   }
@@ -212,4 +214,61 @@ void ctest_test_base_fail(ctest_test_base* base, ctest_options* options);
  */
 #define CTEST_ADD_BENCHMARK(suit, f) ctest_test_suit_add_benchmark(suit, #f, f)
 
-#endif
+typedef struct ctest_sec_ {
+    const char* name;
+    ctest_test_func t;
+    ctest_benchmark_func b;
+} ctest_sec_;
+
+#define CTEST_SECTION_ ".ctest_data"
+
+#ifdef __APPLE__
+#define SECTION_ATTR_(sec) __attribute__((used, section("__DATA, " sec)))
+#else
+#define SECTION_ATTR_(sec) __attribute__((used, section(sec)))
+#endif  // __APPLE__
+
+/**
+ * Run all the test suits defined by CTEST_TEST and CTEST_BENCHMARK.
+ */
+int ctest_main(int argc, char* argv[], ctest_options* options);
+
+/**
+ * Define a testing function that will be run
+ * by ctest_main.
+ *
+ * CTEST_TEST(test_name) {
+ * // Test code here.
+ * }
+ */
+#define CTEST_TEST(test)                                                                                     \
+    static CTEST_TEST_FUNC(func_t_##suit##_##test##_);                                                       \
+    static ctest_sec_ sec_t_##suit##_##test##_ = {                                                           \
+        #test,                                                                                               \
+        func_t_##suit##_##test##_,                                                                           \
+        NULL,                                                                                                \
+    };                                                                                                       \
+    static SECTION_ATTR_(CTEST_SECTION_) ctest_sec_* p_sec_t_##suit##_##test##_ = &sec_t_##suit##_##test##_; \
+    static CTEST_TEST_FUNC(func_t_##suit##_##test##_)
+
+/**
+ * Define a testing function that will be run
+ * by ctest_main.
+ *
+ * CTEST_BENCHMARK(benchmark_name) {
+ *   while (CTEST_LOOP) {
+ *       // Benchmark code here.
+ *   }
+ * }
+ */
+#define CTEST_BENCHMARK(bench)                                                                                 \
+    static CTEST_BENCHMARK_FUNC(func_b_##suit##_##bench##_);                                                   \
+    static ctest_sec_ sec_b_##suit##_##bench##_ = {                                                            \
+        #bench,                                                                                                \
+        NULL,                                                                                                  \
+        func_b_##suit##_##bench##_,                                                                            \
+    };                                                                                                         \
+    static SECTION_ATTR_(CTEST_SECTION_) ctest_sec_* p_sec_b_##suit##_##bench##_ = &sec_b_##suit##_##bench##_; \
+    static CTEST_BENCHMARK_FUNC(func_b_##suit##_##bench##_)
+
+#endif  // CTEST_CTEST_H

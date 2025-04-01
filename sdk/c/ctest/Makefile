@@ -16,9 +16,10 @@ TARGET_ASAN = $(TARGET_BASE)_asan$(EXE_SUFFIX)
 TARGET_LKDBG = $(TARGET_BASE)_lkdbg$(EXE_SUFFIX)
 TARGET_LKDBG_ASAN = $(TARGET_BASE)_lkdbg_asan$(EXE_SUFFIX)
 
-$(info $(TARGET_LKDBG_ASAN))
-
 SOURCES := ctest.c
+HEADERS := ctest.h
+
+SOURCE_DEP := $(SOURCES) $(HEADERS)
 
 all: test test_asan test_lkdbg test_lkdbg_asan
 
@@ -41,17 +42,18 @@ test_lkdbg: $(TEMP_DIR) $(TARGET_LKDBG)
 test_lkdbg_asan: $(TEMP_DIR) $(TARGET_LKDBG_ASAN)
 	export ASAN_OPTIONS="detect_leaks=1" && ./$(TARGET_LKDBG_ASAN)
 
-$(TARGET): $(SOURCES)
+$(TARGET): $(SOURCE_DEP)
 	$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES)
 
-$(TARGET_ASAN): $(SOURCES)
+$(TARGET_ASAN): $(SOURCE_DEP)
 	$(CC) $(CFLAGS_ASAN) -o $(TARGET_ASAN) $(SOURCES)
 
-$(TARGET_LKDBG): $(SOURCES)
+$(TARGET_LKDBG): $(SOURCE_DEP)
 	$(CC) $(CFLAGS_LKDBG) -o $(TARGET_LKDBG) $(SOURCES)
 
-$(TARGET_LKDBG_ASAN): $(SOURCES)
+$(TARGET_LKDBG_ASAN): $(SOURCE_DEP)
 	$(CC) $(CFLAGS_LKDBG_ASAN) -o $(TARGET_LKDBG_ASAN) $(SOURCES)
 
 clean:
+	echo 5
 	rm -rf $(TEMP_DIR)
