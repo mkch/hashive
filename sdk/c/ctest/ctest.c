@@ -831,7 +831,7 @@ static void text_encoder_on_benchmark_end(ctest_printer print, void* printer_coo
                                           size_t count, size_t index,
                                           bool failed, int64_t duration) {
     if (data->op == 0) {
-        fprintf(stderr, "    CTEST_LOOP is not used in benchmark function '%s'\n", name);
+        fprintf(stderr, "    CTEST_BENCHMARK_LOOP is not used in benchmark function '%s'\n", name);
         text_encoder_cookie_free(cookie);
         abort();
         return;
@@ -1015,7 +1015,7 @@ static void json_encoder_on_benchmark_end(ctest_printer print, void* printer_coo
                                           size_t count, size_t index,
                                           bool failed, int64_t duration) {
     if (data->op == 0) {
-        fprintf(stderr, "CTEST_LOOP is not used in benchmark function '%s'\n", name);
+        fprintf(stderr, "CTEST_BENCHMARK_LOOP is not used in benchmark function '%s'\n", name);
         abort();
         return;
     }
@@ -1430,6 +1430,33 @@ bool ctest_test_suit_run(ctest_test_suit* suit, ctest_options* options) {
 #define GET_SECTION(sec, len) get_section(NULL, sec, len)
 #endif
 
+static char* get_base_filename(const char* path, char* buf, size_t buf_len) {
+    if (buf == NULL || buf_len == 0) {
+        return NULL;
+    }
+    const char* file = path;
+    const char* sep = strrchr(file, '/');
+    if (sep == NULL) {
+        sep = strrchr(file, '\\');
+    }
+    if (sep) {
+        file = sep + 1;
+    }
+    size_t len = strlen(file);
+    sep = strrchr(file, '.');
+    if (sep) {
+        len = sep - file;
+    }
+    if (len > buf_len - 1) {
+        len = buf_len - 1;
+    }
+    if (len > 0) {
+        strncpy(buf, file, len);
+    }
+    buf[len] = 0;
+    return buf;
+}
+
 int ctest_main(int argc, char* argv[], ctest_options* options) {
     size_t sec_len = 0;
     ctest_sec_** secs = GET_SECTION(CTEST_SECTION_, &sec_len);
@@ -1440,16 +1467,9 @@ int ctest_main(int argc, char* argv[], ctest_options* options) {
         return 0;
     }
 
-    const char* file = __FILE__;
-    const char* sep = strrchr(file, '/');
-    if (sep == NULL) {
-        sep = strrchr(file, '\\');
-    }
-    if (sep) {
-        file = sep + 1;
-    }
+    char suit_name[16] = {0};
 
-    ctest_test_suit* suit = ctest_test_suit_create(file);
+    ctest_test_suit* suit = ctest_test_suit_create(get_base_filename(__FILE__, suit_name, sizeof(suit_name) / sizeof(suit_name[0])));
     const size_t count = sec_len / sizeof(ctest_sec_*);
     for (size_t i = 0; i < count; i++) {
         ctest_sec_* sec = secs[i];
@@ -1647,6 +1667,33 @@ CTEST_TEST(test_mem_block_detach) {
     mem_block_free(mem);
 }
 
+CTEST_TEST(test_get_base_filename) {
+    char buf[32];
+    const size_t buf_size = sizeof(buf) / sizeof(buf[0]);
+    char* p = get_base_filename("", buf, buf_size);
+    if (strcmp(p, "") != 0) {
+        CTEST_FATALF("want \"%s\", got \"%s\"", "", p);
+    }
+
+    buf[0] = 0;
+    p = get_base_filename("/file/path", buf, buf_size);
+    if (strcmp(p, "path") != 0) {
+        CTEST_FATALF("want \"%s\", got \"%s\"", "path", p);
+    }
+
+    buf[0] = 0;
+    p = get_base_filename("\\file\\path", buf, buf_size);
+    if (strcmp(p, "path") != 0) {
+        CTEST_FATALF("want \"%s\", got \"%s\"", "path", p);
+    }
+
+    buf[0] = 0;
+    p = get_base_filename("/file/path.ext", buf, buf_size);
+    if (strcmp(p, "path") != 0) {
+        CTEST_FATALF("want \"%s\", got \"%s\"", "path", p);
+    }
+}
+
 CTEST_TEST(test_log) {
     CTEST_LOGF("1+1=%d", 1 + 1);
     CTEST_LOGF("line%d: abc\n\tline%d:def\t.", 1, 2);
@@ -1669,7 +1716,7 @@ void sleep_ms(uint32_t ms) {
 #endif
 
 CTEST_BENCHMARK(benchmark_sleep) {
-    while (CTEST_LOOP) {
+    CTEST_BENCHMARK_LOOP {
         sleep_ms(10);
     }
     CTEST_LOGF("sleep done");

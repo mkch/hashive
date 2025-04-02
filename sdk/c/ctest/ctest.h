@@ -202,13 +202,13 @@ void ctest_test_base_fail(ctest_test_base* base, ctest_options* options);
  * Define a benchmark function.
  *
  * CTEST_BENCHMARK_FUNC(benchmark_name) {
- *   while (CTEST_LOOP) {
+ *   CTEST_BENCHMARK_LOOP) {
  *       // Benchmark code here.
  *   }
  * }
  */
 #define CTEST_BENCHMARK_FUNC(NAME) void NAME(ctest_test_base* base_, ctest_options* options_, ctest_benchmark_loop_func loop_, ctest_benchmark_loop_args* args_)
-#define CTEST_LOOP (loop_(args_))
+#define CTEST_BENCHMARK_LOOP while (loop_(args_))
 /**
  * Add a benchmark function f to the test suit.
  */
@@ -256,7 +256,7 @@ int ctest_main(int argc, char* argv[], ctest_options* options);
  * by ctest_main.
  *
  * CTEST_BENCHMARK(benchmark_name) {
- *   while (CTEST_LOOP) {
+ *   while (CTEST_BENCHMARK_LOOP) {
  *       // Benchmark code here.
  *   }
  * }
