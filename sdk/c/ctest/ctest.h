@@ -220,7 +220,7 @@ typedef struct ctest_sec_ {
     ctest_benchmark_func b;
 } ctest_sec_;
 
-#define CTEST_SECTION_ ".ctest_data"
+#define CTEST_SECTION_ ".ctest"
 
 #ifdef __APPLE__
 #define SECTION_ATTR_(sec) __attribute__((used, section("__DATA, " sec)))
