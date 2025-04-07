@@ -118,15 +118,15 @@ ctest_options* ctest_options_set_json_encoder(ctest_options* options);
 void ctest_set_console_printer(ctest_options* options);
 
 // A printer accumulates printings to string.
-typedef struct string_printer string_printer;
+typedef struct ctest_string_printer ctest_string_printer;
 // Frees resources used by printer.
-void string_printer_free(string_printer* printer);
+void ctest_string_printer_free(ctest_string_printer* printer);
 // Retrieves the accumulated string in printer.
 // After calling this function, the printer should not be used to print any more.
-char* string_printer_str(string_printer* printer);
+char* ctest_string_printer_str(ctest_string_printer* printer);
 // Sets options to use string printer.
-// The returned printer should be freed using string_printer_free.
-string_printer* ctest_options_create_string_printer(ctest_options* options);
+// The returned printer should be freed using ctest_string_printer_free.
+ctest_string_printer* ctest_options_create_string_printer(ctest_options* options);
 
 typedef struct ctest_test_suit ctest_test_suit;
 typedef struct ctest_test_base ctest_test_base;
@@ -163,7 +163,7 @@ void ctest_test_base_fail(ctest_test_base* base, ctest_options* options);
  * Formats arguments using default formatting, analogous to printf, and records the text in the error log.
  * The text will be printed only if the test fails or ctest_options.verbose is set.
  */
-#define CTEST_LOGF(fmt, ...) ctest_test_base_log(base_, options_, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
+#define CTEST_LOGF(fmt, ...) ctest_test_base_log(base_, options_, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 /**
  * Marks the test as having failed but continues execution.
  */
